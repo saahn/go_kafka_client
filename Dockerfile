@@ -4,7 +4,7 @@
 # The ASF licenses this file to You under the Apache License, Version 2.0
 # (the "License"); you may not use this file except in compliance with
 # the License.  You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -18,10 +18,11 @@ FROM stealthly/docker-java
 MAINTAINER elodina
 
 #Kafka settings
-ENV KAFKA_VERSION 0.8.2.1
+ENV KAFKA_VERSION 0.10.0.0
 ENV SCALA_VERSION 2.10
 ENV KAFKA_RELEASE kafka_$SCALA_VERSION-$KAFKA_VERSION
-ENV KAFKA_URL https://archive.apache.org/dist/kafka/$KAFKA_VERSION/$KAFKA_RELEASE.tgz
+ENV KAFKA_URL http://www-us.apache.org/dist/kafka/$KAFKA_VERSION/$KAFKA_RELEASE.tgz
+RUN echo "KAFKA_URL: $KAFKA_URL"
 ENV KAFKA_PATH /opt/$KAFKA_RELEASE
 ENV BROKER_ID 1
 ENV HOST_IP localhost
@@ -30,7 +31,7 @@ ENV PORT 9092
 #Zookeeper settings
 ENV ZK_VERSION 3.4.6
 ENV ZK_RELEASE zookeeper-$ZK_VERSION
-ENV ZK_URL https://archive.apache.org/dist/zookeeper/zookeeper-$ZK_VERSION/$ZK_RELEASE.tar.gz
+ENV ZK_URL http://mirror.symnds.com/software/Apache/zookeeper/zookeeper-$ZK_VERSION/$ZK_RELEASE.tar.gz
 ENV ZK_HOME /opt/$ZK_RELEASE
 
 #Avro schema registry settings
@@ -40,7 +41,7 @@ ENV REGISTRY_URL http://packages.confluent.io/archive/$REGISTRY_VERSION/confluen
 ENV REGISTRY_HOME /opt/confluent-$REGISTRY_VERSION
 
 #Go settings
-ENV GOLANG_VERSION 1.3.3
+ENV GOLANG_VERSION 1.6.3
 ENV GOLANG_RELEASE go$GOLANG_VERSION
 ENV GOLANG_URL https://storage.googleapis.com/golang/go$GOLANG_VERSION.linux-amd64.tar.gz
 ENV GOROOT /usr/bin/go
