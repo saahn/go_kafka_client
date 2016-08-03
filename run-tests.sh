@@ -4,7 +4,7 @@
 # The ASF licenses this file to You under the Apache License, Version 2.0
 # (the "License"); you may not use this file except in compliance with
 # the License.  You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -36,6 +36,8 @@ mkdir -p $GOPATH/src/github.com/elodina/go_kafka_client
 cp -r /go_kafka_client $GOPATH/src/github.com/elodina
 cd $GOPATH/src/github.com/elodina/go_kafka_client
 
+echo "Installing gpm"
+wget https://raw.githubusercontent.com/pote/gpm/v1.4.0/bin/gpm && chmod +x gpm && sudo mv gpm /usr/local/bin
 echo 'Updating dependencies'
 gpm install
 
