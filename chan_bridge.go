@@ -61,6 +61,7 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
     return &ChanBridgeSender{
         goChannels: goChannels,
         remoteUrl:  remoteUrl,
+        connections: make(map[int]BridgeConn),
     }
 }
 
