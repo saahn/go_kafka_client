@@ -16,6 +16,7 @@ limitations under the License. */
 package go_kafka_client
 
 import (
+	"log"
 	"fmt"
 	"github.com/elodina/siesta"
 	"github.com/elodina/siesta-producer"
@@ -106,13 +107,22 @@ func NewMirrorMaker(config *MirrorMakerConfig) *MirrorMaker {
 // Starts the MirrorMaker. This method is blocking and should probably be run in a separate goroutine.
 func (this *MirrorMaker) Start() {
 	this.initializeMessageChannels()
-	this.initializeBridge()
-	this.startConsumers()
-	this.startProducers()
-	if this.chanBridge != nil {
+	if this.isBridge() {
+		this.initializeBridge()
 		this.chanBridge.Start()
+		log.Print("Initialized and started bridge!")
+	} else {
+		this.startConsumers()
+		this.startProducers()
 	}
 	<-this.stopped
+}
+
+func (this *MirrorMaker) isBridge() bool {
+	if this.config.RemoteUrl != "" || this.config.ListenUrl != "" {
+		return true
+	}
+	return false
 }
 
 func (this *MirrorMaker) initializeBridge() {

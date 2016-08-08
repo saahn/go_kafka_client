@@ -31,9 +31,11 @@ func (cb *ChanBridge) startReceiver() {
 func (cb *ChanBridge) Start() {
     if cb.receiver != nil {
         cb.startReceiver()
+        log.Print("Started bridge receiver.")
     }
     if cb.sender != nil {
         cb.startSender()
+        log.Print("Started bridge sender.")
     }
 }
 
