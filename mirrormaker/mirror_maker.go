@@ -48,6 +48,8 @@ var prefix = flag.String("prefix", "", "Destination topic prefix.")
 var queueSize = flag.Int("queue.size", 10000, "Number of messages that are buffered between the consumer and producer.")
 var maxProcs = flag.Int("max.procs", runtime.NumCPU(), "Maximum number of CPUs that can be executing simultaneously.")
 var schemaRegistryUrl = flag.String("schema.registry.url", "", "Avro schema registry URL for message encoding/decoding")
+var remoteUrl = flag.String("remote.url", "", "host:port of the remote mirrormaker, if mirroring over the network.")
+var listenUrl = flag.String("listen.url", "", "host:port of the listen address of this mirrormaker, if mirroring over the network")
 
 func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 	flag.Var(&consumerConfig, "consumer.config", "Path to consumer configuration file.")
@@ -58,12 +60,16 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 		fmt.Println("Exactly one of whitelist or blacklist is required.")
 		os.Exit(1)
 	}
-	if *producerConfig == "" {
-		fmt.Println("Producer config is required.")
+	if *producerConfig == "" && len(consumerConfig) == 0 {
+		fmt.Println("A producer config or at least one consumer config is required.")
 		os.Exit(1)
 	}
-	if len(consumerConfig) == 0 {
-		fmt.Println("At least one consumer config is required.")
+	if *remoteUrl != "" && len(consumerConfig) == 0 {
+		fmt.Println("A consumer config is required to mirror messages to a remote producer.")
+		os.Exit(1)
+	}
+	if *listenUrl != "" && *producerConfig == "" {
+		fmt.Println("A producer config is required to receive messages from a remote consumer.")
 		os.Exit(1)
 	}
 	if *queueSize < 0 {
@@ -82,6 +88,8 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 	config.PreserveOrder = *preserveOrder
 	config.ProducerConfig = *producerConfig
 	config.TopicPrefix = *prefix
+	config.RemoteUrl = *remoteUrl
+	config.ListenUrl = *listenUrl
 	if *schemaRegistryUrl != "" {
 		config.KeyEncoder = avro.NewKafkaAvroEncoder(*schemaRegistryUrl).Encode
 		config.ValueEncoder = avro.NewKafkaAvroEncoder(*schemaRegistryUrl).Encode

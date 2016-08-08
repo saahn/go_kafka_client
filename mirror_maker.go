@@ -65,6 +65,12 @@ type MirrorMakerConfig struct {
 
 	// Message values decoder for consumer
 	ValueDecoder Decoder
+
+	// Remote Mirror Maker to connect to, if mirroring over the network
+	RemoteUrl string
+
+	// Bind address to listen on, if mirroring over the network
+	ListenUrl string
 }
 
 // Creates an empty MirrorMakerConfig.
@@ -86,6 +92,7 @@ type MirrorMaker struct {
 	producers       []producer.Producer
 	messageChannels []chan *Message
 	stopped         chan struct{}
+	chanBridge		*ChanBridge	 // for over-the-top replication only
 }
 
 // Creates a new MirrorMaker using given MirrorMakerConfig.
@@ -99,9 +106,23 @@ func NewMirrorMaker(config *MirrorMakerConfig) *MirrorMaker {
 // Starts the MirrorMaker. This method is blocking and should probably be run in a separate goroutine.
 func (this *MirrorMaker) Start() {
 	this.initializeMessageChannels()
+	this.initializeBridge()
 	this.startConsumers()
 	this.startProducers()
+	if this.chanBridge != nil {
+		this.chanBridge.Start()
+	}
 	<-this.stopped
+}
+
+func (this *MirrorMaker) initializeBridge() {
+	if this.config.RemoteUrl != "" {
+		cbs := NewChanBridgeSender(this.messageChannels, this.config.RemoteUrl)
+		this.chanBridge = &ChanBridge{sender: cbs}
+	} else if this.config.ListenUrl != "" {
+		cbr := NewChanBridgeReceiver(this.messageChannels, this.config.ListenUrl)
+		this.chanBridge = &ChanBridge{receiver: cbr}
+	}
 }
 
 // Gracefully stops the MirrorMaker.
