@@ -109,7 +109,7 @@ func (this *MirrorMaker) Start() {
 	this.initializeMessageChannels()
 	if this.isBridge() {
 		this.initializeBridge()
-		this.chanBridge.Start()
+		go this.chanBridge.Start()
 		log.Print("Initialized and started bridge!")
 	} else {
 		this.startConsumers()
@@ -127,9 +127,11 @@ func (this *MirrorMaker) isBridge() bool {
 
 func (this *MirrorMaker) initializeBridge() {
 	if this.config.RemoteUrl != "" {
+		this.startConsumers()
 		cbs := NewChanBridgeSender(this.messageChannels, this.config.RemoteUrl)
 		this.chanBridge = &ChanBridge{sender: cbs}
 	} else if this.config.ListenUrl != "" {
+		this.startProducers()
 		cbr := NewChanBridgeReceiver(this.messageChannels, this.config.ListenUrl)
 		this.chanBridge = &ChanBridge{receiver: cbr}
 	}
@@ -137,6 +139,27 @@ func (this *MirrorMaker) initializeBridge() {
 
 // Gracefully stops the MirrorMaker.
 func (this *MirrorMaker) Stop() {
+	if len(this.config.ConsumerConfigs) > 0 {
+		this.stopConsumers()
+	}
+
+	if this.config.ProducerConfig != "" {
+		this.stopProducers()
+	}
+
+	Info("", "Sending stopped")
+	this.stopped <- struct{}{}
+	Info("", "Sent stopped")
+}
+
+func (this *MirrorMaker) stopProducers() {
+	//TODO maybe drain message channel first?
+	for _, producer := range this.producers {
+		producer.Close()
+	}
+}
+
+func (this *MirrorMaker) stopConsumers() {
 	consumerCloseChannels := make([]<-chan bool, 0)
 	for _, consumer := range this.consumers {
 		consumerCloseChannels = append(consumerCloseChannels, consumer.Close())
@@ -149,15 +172,6 @@ func (this *MirrorMaker) Stop() {
 	for _, ch := range this.messageChannels {
 		close(ch)
 	}
-
-	//TODO maybe drain message channel first?
-	for _, producer := range this.producers {
-		producer.Close()
-	}
-
-	Info("", "Sending stopped")
-	this.stopped <- struct{}{}
-	Info("", "Sent stopped")
 }
 
 func (this *MirrorMaker) startConsumers() {
