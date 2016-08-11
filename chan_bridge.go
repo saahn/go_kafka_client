@@ -46,7 +46,7 @@ type BridgeConn struct {
 }
 
 type BridgeMessage struct {
-    msg             *Message
+    msg             Message
     goChanIndex     int
     bridgeChan      libchan.Sender
 }
@@ -100,17 +100,23 @@ func (cbs *ChanBridgeSender) Connect() {
 
 func (cbs *ChanBridgeSender) Start() {
     for goChanIndex, bridgeConn := range cbs.connections {
-        message := <-cbs.goChannels[goChanIndex]
-        bridgeMessage := &BridgeMessage{
-            msg:            message,
-            goChanIndex:    goChanIndex,
-            bridgeChan:     bridgeConn.remoteSender,
-        }
-        var err error
-        err = bridgeConn.sender.Send(bridgeMessage)
-        if err != nil {
-            log.Fatal(err)
-        }
+        go func() {
+            for message := range cbs.goChannels[goChanIndex] {
+                bridgeMessage := &BridgeMessage{
+                    msg:            *message,
+                    goChanIndex:    goChanIndex,
+                    bridgeChan:     bridgeConn.remoteSender,
+                }
+                var err error
+                if err != nil {
+                    log.Fatal(err)
+                }
+                err = bridgeConn.sender.Send(*bridgeMessage)
+                if err != nil {
+                    log.Fatal(err)
+                }
+            }
+        }()
     }
 }
 
@@ -162,10 +168,10 @@ func (cbr *ChanBridgeReceiver) Listen() {
                             log.Print(err)
                             break
                         }
-                        cbr.goChannels[bridgeMessage.goChanIndex] <- bridgeMessage.msg
+                        cbr.goChannels[bridgeMessage.goChanIndex] <- &(bridgeMessage.msg)
                     }
-                    }()
-                }
                 }()
             }
-        }
+        }()
+    }
+}
