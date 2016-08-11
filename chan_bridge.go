@@ -153,6 +153,7 @@ func (cbr *ChanBridgeReceiver) Listen() {
         t := spdy.NewTransport(p)
 
         go func() {
+            log.Print("In new receiver goroutine")
             for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
@@ -168,6 +169,8 @@ func (cbr *ChanBridgeReceiver) Listen() {
                             log.Print(err)
                             break
                         }
+                        log.Printf("received bridgeMessage is %+v", *bridgeMessage)
+                        log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.msg, bridgeMessage.msg)
                         cbr.goChannels[bridgeMessage.goChanIndex] <- &(bridgeMessage.msg)
                     }
                 }()

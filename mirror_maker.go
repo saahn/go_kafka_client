@@ -231,6 +231,7 @@ func (this *MirrorMaker) initializeMessageChannels() {
 	} else {
 		this.messageChannels = append(this.messageChannels, make(chan *Message, this.config.ChannelSize))
 	}
+	log.Printf("messageChannels after initializeMessageChannels: %+v", this.messageChannels)
 }
 
 func (this *MirrorMaker) startProducers() {
@@ -250,7 +251,9 @@ func (this *MirrorMaker) startProducers() {
 		}
 
 		producer := producer.NewKafkaProducer(conf, this.config.KeyEncoder, this.config.ValueEncoder, connector)
+		log.Printf("created new producer: %+v", producer)
 		this.producers = append(this.producers, producer)
+		log.Printf("added new producer to this mirrormaker: %+v", this.producers)
 		if this.config.PreserveOrder {
 			go this.produceRoutine(producer, i)
 		} else {
@@ -261,12 +264,16 @@ func (this *MirrorMaker) startProducers() {
 
 func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 	for msg := range this.messageChannels[channelIndex] {
-		p.Send(&producer.ProducerRecord{
+		log.Printf("the producer in produceRoutine: %+v", p)
+		log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
+		pr := &producer.ProducerRecord{
 			Topic:     this.config.TopicPrefix + msg.Topic,
 			Partition: msg.Partition,
 			Key:       msg.Key,
 			Value:     msg.DecodedValue,
-		})
+		}
+		p.Send(pr)
+		log.Printf("Sent producer record: %+v", *pr)
 	}
 }
 
