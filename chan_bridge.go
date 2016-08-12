@@ -5,6 +5,7 @@ import (
     "net"
     "github.com/docker/libchan"
     "github.com/docker/libchan/spdy"
+    "time"
 )
 
 type ChanBridge struct {
@@ -46,9 +47,28 @@ type BridgeConn struct {
 }
 
 type BridgeMessage struct {
-    msg             Message
-    goChanIndex     int
-    bridgeChan      libchan.Sender
+    Msg         Message
+    Seq         int
+    GoChanIndex int
+    BridgeChan  libchan.Sender
+}
+
+type SimpleMessage struct {
+    msg             string
+}
+
+func (sm *SimpleMessage) MarshalMsgpack() ([]byte, error) {
+    log.Printf("marshalling a SimpleMessage: %+v", *sm)
+    result := []byte(sm.msg)
+    log.Printf("marshalling result: %+v", result)
+    return result, nil
+}
+
+func (sm *SimpleMessage) UnmarshalMsgpack(b []byte) error {
+	log.Printf("unmarshalling a SimpleMessage: %+v", *sm)
+	sm.msg = string(b)
+	log.Printf("unmarshalling result: %+v", *sm)
+    return nil
 }
 
 type ChanBridgeSender struct {
@@ -98,20 +118,21 @@ func (cbs *ChanBridgeSender) Connect() {
     }
 }
 
+
 func (cbs *ChanBridgeSender) Start() {
     for goChanIndex, bridgeConn := range cbs.connections {
         go func() {
             for message := range cbs.goChannels[goChanIndex] {
-                bridgeMessage := &BridgeMessage{
-                    msg:            *message,
-                    goChanIndex:    goChanIndex,
-                    bridgeChan:     bridgeConn.remoteSender,
+                simpleMessage := &SimpleMessage {
+                    msg: time.Now().String(),
                 }
                 var err error
                 if err != nil {
                     log.Fatal(err)
                 }
-                err = bridgeConn.sender.Send(*bridgeMessage)
+                log.Printf("original message: %+v", message)
+                log.Printf("Sending msg: %+v", *simpleMessage)
+                err = bridgeConn.sender.Send(simpleMessage)
                 if err != nil {
                     log.Fatal(err)
                 }
@@ -119,6 +140,31 @@ func (cbs *ChanBridgeSender) Start() {
         }()
     }
 }
+
+//func (cbs *ChanBridgeSender) Start() {
+//    for goChanIndex, bridgeConn := range cbs.connections {
+//        go func() {
+//            for message := range cbs.goChannels[goChanIndex] {
+//                bridgeMessage := &BridgeMessage{
+//                    Msg:            *message,
+//                    Seq:            100,
+//                    GoChanIndex:    goChanIndex,
+//                    BridgeChan:     bridgeConn.remoteSender,
+//                }
+//                var err error
+//                if err != nil {
+//                    log.Fatal(err)
+//                }
+//                log.Printf("original message: %+v", message)
+//                log.Printf("Sending msg: %+v", *bridgeMessage)
+//                err = bridgeConn.sender.Send(bridgeMessage)
+//                if err != nil {
+//                    log.Fatal(err)
+//                }
+//            }
+//        }()
+//    }
+//}
 
 type ChanBridgeReceiver struct {
     goChannels      []chan *Message   // target go channels for producer messages
@@ -155,6 +201,7 @@ func (cbr *ChanBridgeReceiver) Listen() {
         go func() {
             log.Print("In new receiver goroutine")
             for {
+                log.Print(">>>>> waiting to receive...")
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
                     log.Print(err)
@@ -162,8 +209,11 @@ func (cbr *ChanBridgeReceiver) Listen() {
                 }
 
                 go func() {
+                    log.Print(">>>>> Receiving")
                     for {
-                        bridgeMessage := &BridgeMessage{}
+                        bridgeMessage := &SimpleMessage{}
+                        //bridgeMessage := &BridgeMessage{}
+                        log.Printf("new SimpleMessage: %+v", bridgeMessage)
                         err := receiver.Receive(bridgeMessage)
                         if err != nil {
                             log.Print(err)
@@ -171,7 +221,16 @@ func (cbr *ChanBridgeReceiver) Listen() {
                         }
                         log.Printf("received bridgeMessage is %+v", *bridgeMessage)
                         log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.msg, bridgeMessage.msg)
-                        cbr.goChannels[bridgeMessage.goChanIndex] <- &(bridgeMessage.msg)
+                        msg := &Message{
+                            Topic: "bridge_test2",
+                            Value: []byte(bridgeMessage.msg),
+                            DecodedValue: bridgeMessage.msg,
+                            Partition: 0,
+                        }
+                        log.Printf("the msg to send over goChannel: %+v", *msg)
+                        cbr.goChannels[0] <- msg
+                        log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
+                        break
                     }
                 }()
             }
