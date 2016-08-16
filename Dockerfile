@@ -4,7 +4,7 @@
 # The ASF licenses this file to You under the Apache License, Version 2.0
 # (the "License"); you may not use this file except in compliance with
 # the License.  You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -40,7 +40,8 @@ ENV REGISTRY_URL http://packages.confluent.io/archive/$REGISTRY_VERSION/confluen
 ENV REGISTRY_HOME /opt/confluent-$REGISTRY_VERSION
 
 #Go settings
-ENV GOLANG_VERSION 1.3.3
+#ENV GOLANG_VERSION 1.3.3
+ENV GOLANG_VERSION 1.6.3
 ENV GOLANG_RELEASE go$GOLANG_VERSION
 ENV GOLANG_URL https://storage.googleapis.com/golang/go$GOLANG_VERSION.linux-amd64.tar.gz
 ENV GOROOT /usr/bin/go
