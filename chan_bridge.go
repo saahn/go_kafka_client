@@ -5,9 +5,10 @@ import (
     "net"
     "github.com/docker/libchan"
     "github.com/docker/libchan/spdy"
-    "bytes"
-    "fmt"
+    "github.com/dmcgowan/msgpack"
 )
+
+var useBridgeMessage bool = true
 
 type ChanBridge struct {
     sender      *ChanBridgeSender
@@ -48,43 +49,58 @@ type BridgeMessage struct {
     //BridgeChan  libchan.Sender
 }
 
+func (m Message) MarshalMsgpack() ([]byte, error) {
+    log.Printf("marshalling a Message: %+v", m)
+    bytesWritten, err := msgpack.Marshal(m.Key, m.Value, m.DecodedKey, m.DecodedValue, m.Topic, m.Partition, m.Offset, m.HighwaterMarkOffset)
+    log.Printf("MarshalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
+    log.Printf("marshalling Message result: %+v", string(bytesWritten))
+    return bytesWritten, nil
+}
+
+func (m *Message) UnmarshalMsgpack(data []byte) error {
+    log.Printf("unmarshalling data into a Message: %+v", data)
+    err := msgpack.Unmarshal(data, &m.Key, &m.Value, &m.DecodedKey, &m.DecodedValue, &m.Topic, &m.Partition, &m.Offset, &m.HighwaterMarkOffset)
+    log.Printf("the unmarshalled Message: %+v", *m)
+    return err
+}
+
 func (bm BridgeMessage) MarshalMsgpack() ([]byte, error) {
     log.Printf("marshalling a BridgeMessage: %+v", bm)
-    var b bytes.Buffer
-    bytesWritten, err := fmt.Fprintln(&b, bm.Msg, bm.Seq, bm.GoChanIndex)
-    log.Printf("MashalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
-    result := b.Bytes()
-    log.Printf("marshalling result: %+v", result)
-    return result, nil
+    bytesWritten, err := msgpack.Marshal(bm.Msg, bm.Seq, bm.GoChanIndex)
+    log.Printf("MarshalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
+    log.Printf("marshalling BridgeMessage result: %+v", string(bytesWritten))
+    return bytesWritten, nil
 }
 
 func (bm *BridgeMessage) UnmarshalMsgpack(data []byte) error {
     log.Printf("unmarshalling data into a BridgeMessage: %+v", data)
-    b := bytes.NewBuffer(data)
-    _, err := fmt.Fscanln(b, &bm.Msg, &bm.Seq, &bm.GoChanIndex)
-    log.Printf("unmarshalling result in buffer: %+v", *b)
+    err := msgpack.Unmarshal(data, &bm.Msg, &bm.Seq, &bm.GoChanIndex)
+    log.Printf("the unmarshalled BridgeMessage: %+v", *bm)
     return err
 }
 
 // TODO: delete after debugging
 type SimpleMessage struct {
-    msg             string
+    Msg             string
+    Seq             int
+    GoChanIndex     int
 }
 
 // TODO: delete after debugging
 func (sm *SimpleMessage) MarshalMsgpack() ([]byte, error) {
-    log.Printf("marshalling a SimpleMessage: %+v", *sm)
-    result := []byte(sm.msg)
-    log.Printf("marshalling result: %+v", result)
-    return result, nil
+    log.Printf("marshalling a SimpleMessage: %+v", sm)
+    bytesWritten, err := msgpack.Marshal(sm.Msg, sm.Seq, sm.GoChanIndex)
+    log.Printf("MarshalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
+    log.Printf("marshalling SimpleMessage result: %+v", string(bytesWritten))
+    return bytesWritten, nil
 }
 
 // TODO: delete after debugging
-func (sm *SimpleMessage) UnmarshalMsgpack(b []byte) error {
-	log.Printf("unmarshalling a SimpleMessage: %+v", *sm)
-	sm.msg = string(b)
-	log.Printf("unmarshalling result: %+v", *sm)
-    return nil
+func (sm *SimpleMessage) UnmarshalMsgpack(data []byte) error {
+    log.Printf("unmarshalling data into a SimpleMessage: %+v", data)
+    err := msgpack.Unmarshal(data, &sm.Msg, &sm.Seq, &sm.GoChanIndex)
+    log.Printf("the unmarshalled SimpleMessage: %+v", *sm)
+    return err
 }
 
 type ChanBridgeSender struct {
@@ -137,28 +153,56 @@ func (cbs *ChanBridgeSender) Connect() {
 
 func (cbs *ChanBridgeSender) Start() {
     for goChanIndex, bridgeConn := range cbs.connections {
-        go func() {
-            for message := range cbs.goChannels[goChanIndex] {
-                bridgeMessage := &BridgeMessage{
-                    Msg:            *message,
-                    Seq:            100,
-                    GoChanIndex:    goChanIndex,
-                    //BridgeChan:     bridgeConn.RemoteSender,
+
+        // TODO: Remove debugging condition
+        if useBridgeMessage {
+            /* BridgeMessage */
+            go func() {
+                for message := range cbs.goChannels[goChanIndex] {
+                    bridgeMessage := &BridgeMessage{
+                        Msg:            *message,
+                        Seq:            30,
+                        GoChanIndex:    goChanIndex,
+                        //BridgeChan:     bridgeConn.RemoteSender,
+                    }
+                    var err error
+                    if err != nil {
+                        log.Fatal(err)
+                    }
+                    log.Printf("original gochan Message: %+v", message)
+                    log.Printf("Sending BridgeMessage: %+v", *bridgeMessage)
+                    sender, err := bridgeConn.Transport.NewSendChannel()
+                    err = sender.Send(bridgeMessage)
+                    if err != nil {
+                        log.Fatal(err)
+                    }
+                    sender.Close()
                 }
-                var err error
-                if err != nil {
-                    log.Fatal(err)
+            }()
+        } else {
+            /* SimpleMessage */
+            go func() {
+                for message := range cbs.goChannels[goChanIndex] {
+                    simpleMessage := &SimpleMessage{
+                        Msg:            string(message.Value),
+                        Seq:            100,
+                        GoChanIndex:    goChanIndex,
+                    }
+                    var err error
+                    if err != nil {
+                        log.Fatal(err)
+                    }
+                    log.Printf("original SimpleMessage message: %+v", message)
+                    log.Printf("Sending SimpleMessage: %+v", *simpleMessage)
+                    sender, err := bridgeConn.Transport.NewSendChannel()
+                    err = sender.Send(simpleMessage)
+                    if err != nil {
+                        log.Fatal(err)
+                    }
+                    sender.Close()
                 }
-                log.Printf("original message: %+v", message)
-                log.Printf("Sending msg: %+v", *bridgeMessage)
-                sender, err := bridgeConn.Transport.NewSendChannel()
-                err = sender.Send(bridgeMessage)
-                if err != nil {
-                    log.Fatal(err)
-                }
-                sender.Close()
-            }
-        }()
+            }()
+        }
     }
 }
 
@@ -204,33 +248,57 @@ func (cbr *ChanBridgeReceiver) Listen() {
                     break
                 }
 
-                go func() {
-                    log.Print(">>>>> Receiving")
-                    bridgeMessage := &BridgeMessage{}
-                    log.Printf("new BridgeMessage: %+v", bridgeMessage)
-                    err := receiver.Receive(bridgeMessage)
-                    log.Printf("received BridgeMessage: %+v", *bridgeMessage)
-                    log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
-                    log.Printf("the bridgeMessage.Msg: %+v", &bridgeMessage.Msg)
-                    log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
+                // TODO: Remove debugging condition
+                if useBridgeMessage {
+                    /* BridgeMessage */
+                    go func() {
+                        log.Print(">>>>> Receiving")
+                        bridgeMessage := &BridgeMessage{}
+                        log.Printf("new BridgeMessage: %+v", bridgeMessage)
+                        err := receiver.Receive(bridgeMessage)
+                        log.Printf("received BridgeMessage: %+v", *bridgeMessage)
+                        log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
+                        log.Printf("the bridgeMessage.Msg: %+v", &bridgeMessage.Msg)
+                        log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
 
-                    // Temporary hack b/c unmarshalling does not work for BridgeMessage
-                    msg := &Message{
-                        Key: []byte("foo"),
-                        Value: []byte("bar"),
-                        DecodedValue: "bar",
-                        Topic: "bridge_test1",
-                        Partition: 0,
-                        Offset: 1,
-                        HighwaterMarkOffset: 2,
-                    }
-                    log.Printf("the msg to send over goChannel: %+v", msg)
-                    cbr.goChannels[0] <- msg
-                    log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
-                    if err != nil {
-                        log.Print(err)
-                    }
-                }()
+
+                        log.Printf("the msg to send over goChannel: %+v", bridgeMessage.Msg)
+                        cbr.goChannels[bridgeMessage.GoChanIndex] <- &bridgeMessage.Msg
+                        log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
+                        if err != nil {
+                            log.Print(err)
+                        }
+                    }()
+                } else {
+                    /* SimpleMessage */
+                    go func() {
+                        log.Print(">>>>> Receiving")
+                        simpleMessage := &SimpleMessage{}
+                        log.Printf("new SimpleMessage: %+v", simpleMessage)
+                        err := receiver.Receive(simpleMessage)
+                        log.Printf("received SimpleMessage: %+v", *simpleMessage)
+                        log.Printf("received SimpleMessage.msg is %+v of type %T", simpleMessage.Msg, simpleMessage.Msg)
+                        log.Printf("the SimpleMessage.Msg: %+v", &simpleMessage.Msg)
+                        log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
+
+                        // Temporary hack b/c go channel expects Message
+                        msg := &Message{
+                            Key: []byte("foo"),
+                            Value: []byte(simpleMessage.Msg),
+                            DecodedValue: simpleMessage.Msg,
+                            Topic: "bridge_test1",
+                            Partition: 0,
+                            Offset: 1,
+                            HighwaterMarkOffset: 2,
+                        }
+                        log.Printf("the msg to send over goChannel: %+v", msg)
+                        cbr.goChannels[0] <- msg
+                        log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
+                        if err != nil {
+                            log.Print(err)
+                        }
+                    }()
+                }
             }
         }()
     }
