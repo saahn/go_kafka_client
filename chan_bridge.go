@@ -5,19 +5,13 @@ import (
     "net"
     "github.com/docker/libchan"
     "github.com/docker/libchan/spdy"
-    "time"
+    "bytes"
+    "fmt"
 )
 
 type ChanBridge struct {
     sender      *ChanBridgeSender
     receiver    *ChanBridgeReceiver
-}
-
-func NewChanBridge(sender *ChanBridgeSender, receiver *ChanBridgeReceiver) *ChanBridge {
-    return &ChanBridge{
-        sender:     sender,      // the "client"
-        receiver:   receiver,    // the "server"
-    }
 }
 
 func (cb *ChanBridge) startSender() {
@@ -41,22 +35,43 @@ func (cb *ChanBridge) Start() {
 }
 
 type BridgeConn struct {
-    sender          libchan.Sender
-    receiver        libchan.Receiver
-    remoteSender    libchan.Sender  // TODO: remove? currently not used, since receiver does not send anything back
+    Transport    libchan.Transport
+    Sender       libchan.Sender
+    Receiver     libchan.Receiver
+    //RemoteSender libchan.Sender // TODO: remove? currently not used, since receiver does not send anything back
 }
 
 type BridgeMessage struct {
     Msg         Message
     Seq         int
     GoChanIndex int
-    BridgeChan  libchan.Sender
+    //BridgeChan  libchan.Sender
 }
 
+func (bm BridgeMessage) MarshalMsgpack() ([]byte, error) {
+    log.Printf("marshalling a BridgeMessage: %+v", bm)
+    var b bytes.Buffer
+    bytesWritten, err := fmt.Fprintln(&b, bm.Msg, bm.Seq, bm.GoChanIndex)
+    log.Printf("MashalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
+    result := b.Bytes()
+    log.Printf("marshalling result: %+v", result)
+    return result, nil
+}
+
+func (bm *BridgeMessage) UnmarshalMsgpack(data []byte) error {
+    log.Printf("unmarshalling data into a BridgeMessage: %+v", data)
+    b := bytes.NewBuffer(data)
+    _, err := fmt.Fscanln(b, &bm.Msg, &bm.Seq, &bm.GoChanIndex)
+    log.Printf("unmarshalling result in buffer: %+v", *b)
+    return err
+}
+
+// TODO: delete after debugging
 type SimpleMessage struct {
     msg             string
 }
 
+// TODO: delete after debugging
 func (sm *SimpleMessage) MarshalMsgpack() ([]byte, error) {
     log.Printf("marshalling a SimpleMessage: %+v", *sm)
     result := []byte(sm.msg)
@@ -64,6 +79,7 @@ func (sm *SimpleMessage) MarshalMsgpack() ([]byte, error) {
     return result, nil
 }
 
+// TODO: delete after debugging
 func (sm *SimpleMessage) UnmarshalMsgpack(b []byte) error {
 	log.Printf("unmarshalling a SimpleMessage: %+v", *sm)
 	sm.msg = string(b)
@@ -103,11 +119,12 @@ func (cbs *ChanBridgeSender) connect() *BridgeConn {
         log.Fatal(err)
     }
 
-    receiver, remoteSender := libchan.Pipe()
+    receiver, _ := libchan.Pipe()
     return &BridgeConn{
-        sender:         sender,
-        receiver:       receiver,
-        remoteSender:   remoteSender,
+        Transport:      transport,
+        Sender:         sender,
+        Receiver:       receiver,
+        //RemoteSender:   remoteSender,
     }
 }
 
@@ -118,53 +135,32 @@ func (cbs *ChanBridgeSender) Connect() {
     }
 }
 
-
 func (cbs *ChanBridgeSender) Start() {
     for goChanIndex, bridgeConn := range cbs.connections {
         go func() {
             for message := range cbs.goChannels[goChanIndex] {
-                simpleMessage := &SimpleMessage {
-                    msg: time.Now().String(),
+                bridgeMessage := &BridgeMessage{
+                    Msg:            *message,
+                    Seq:            100,
+                    GoChanIndex:    goChanIndex,
+                    //BridgeChan:     bridgeConn.RemoteSender,
                 }
                 var err error
                 if err != nil {
                     log.Fatal(err)
                 }
                 log.Printf("original message: %+v", message)
-                log.Printf("Sending msg: %+v", *simpleMessage)
-                err = bridgeConn.sender.Send(simpleMessage)
+                log.Printf("Sending msg: %+v", *bridgeMessage)
+                sender, err := bridgeConn.Transport.NewSendChannel()
+                err = sender.Send(bridgeMessage)
                 if err != nil {
                     log.Fatal(err)
                 }
+                sender.Close()
             }
         }()
     }
 }
-
-//func (cbs *ChanBridgeSender) Start() {
-//    for goChanIndex, bridgeConn := range cbs.connections {
-//        go func() {
-//            for message := range cbs.goChannels[goChanIndex] {
-//                bridgeMessage := &BridgeMessage{
-//                    Msg:            *message,
-//                    Seq:            100,
-//                    GoChanIndex:    goChanIndex,
-//                    BridgeChan:     bridgeConn.remoteSender,
-//                }
-//                var err error
-//                if err != nil {
-//                    log.Fatal(err)
-//                }
-//                log.Printf("original message: %+v", message)
-//                log.Printf("Sending msg: %+v", *bridgeMessage)
-//                err = bridgeConn.sender.Send(bridgeMessage)
-//                if err != nil {
-//                    log.Fatal(err)
-//                }
-//            }
-//        }()
-//    }
-//}
 
 type ChanBridgeReceiver struct {
     goChannels      []chan *Message   // target go channels for producer messages
@@ -204,33 +200,35 @@ func (cbr *ChanBridgeReceiver) Listen() {
                 log.Print(">>>>> waiting to receive...")
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
-                    log.Print(err)
+                    log.Printf("Error in ChanBridgeReceiver.Listen: %+v", err)
                     break
                 }
 
                 go func() {
                     log.Print(">>>>> Receiving")
-                    for {
-                        bridgeMessage := &SimpleMessage{}
-                        //bridgeMessage := &BridgeMessage{}
-                        log.Printf("new SimpleMessage: %+v", bridgeMessage)
-                        err := receiver.Receive(bridgeMessage)
-                        if err != nil {
-                            log.Print(err)
-                            break
-                        }
-                        log.Printf("received bridgeMessage is %+v", *bridgeMessage)
-                        log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.msg, bridgeMessage.msg)
-                        msg := &Message{
-                            Topic: "bridge_test2",
-                            Value: []byte(bridgeMessage.msg),
-                            DecodedValue: bridgeMessage.msg,
-                            Partition: 0,
-                        }
-                        log.Printf("the msg to send over goChannel: %+v", *msg)
-                        cbr.goChannels[0] <- msg
-                        log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
-                        break
+                    bridgeMessage := &BridgeMessage{}
+                    log.Printf("new BridgeMessage: %+v", bridgeMessage)
+                    err := receiver.Receive(bridgeMessage)
+                    log.Printf("received BridgeMessage: %+v", *bridgeMessage)
+                    log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
+                    log.Printf("the bridgeMessage.Msg: %+v", &bridgeMessage.Msg)
+                    log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
+
+                    // Temporary hack b/c unmarshalling does not work for BridgeMessage
+                    msg := &Message{
+                        Key: []byte("foo"),
+                        Value: []byte("bar"),
+                        DecodedValue: "bar",
+                        Topic: "bridge_test1",
+                        Partition: 0,
+                        Offset: 1,
+                        HighwaterMarkOffset: 2,
+                    }
+                    log.Printf("the msg to send over goChannel: %+v", msg)
+                    cbr.goChannels[0] <- msg
+                    log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
+                    if err != nil {
+                        log.Print(err)
                     }
                 }()
             }
