@@ -199,7 +199,7 @@ func (this *MirrorMaker) startConsumers() {
 			numProducers := this.config.NumProducers
 			config.NumWorkers = 1 // NumWorkers must be 1 to guarantee order
 			config.Strategy = func(_ *Worker, msg *Message, id TaskId) WorkerResult {
-				this.messageChannels[topicPartitionHash(msg)%numProducers] <- msg
+				this.messageChannels[TopicPartitionHash(msg)%numProducers] <- msg
 
 				return NewSuccessfulResult(id)
 			}
@@ -277,7 +277,7 @@ func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 	}
 }
 
-func topicPartitionHash(msg *Message) int {
+func TopicPartitionHash(msg *Message) int {
 	h := fnv.New32a()
 	h.Write([]byte(fmt.Sprintf("%s%d", msg.Topic, msg.Partition)))
 	return int(h.Sum32())
