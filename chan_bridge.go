@@ -45,7 +45,6 @@ type BridgeConn struct {
 type BridgeMessage struct {
     Msg         Message
     Seq         int
-    GoChanIndex int
     //BridgeChan  libchan.Sender
 }
 
@@ -61,7 +60,7 @@ func (m *Message) UnmarshalMsgpack(data []byte) error {
 
 func (bm BridgeMessage) MarshalMsgpack() ([]byte, error) {
     log.Printf("marshalling a BridgeMessage: %+v", bm)
-    bytesWritten, err := msgpack.Marshal(bm.Msg, bm.Seq, bm.GoChanIndex)
+    bytesWritten, err := msgpack.Marshal(bm.Msg, bm.Seq)
     log.Printf("MarshalMsgpack wrote %v and got err: %+v", bytesWritten, err)
     log.Printf("marshalled BridgeMessage bytes casted to string: %+v", string(bytesWritten))
     return bytesWritten, err
@@ -69,7 +68,7 @@ func (bm BridgeMessage) MarshalMsgpack() ([]byte, error) {
 
 func (bm *BridgeMessage) UnmarshalMsgpack(data []byte) error {
     log.Printf("Data to be unmarshalled into a BridgeMessage: %+v", data)
-    err := msgpack.Unmarshal(data, &bm.Msg, &bm.Seq, &bm.GoChanIndex)
+    err := msgpack.Unmarshal(data, &bm.Msg, &bm.Seq)
     log.Printf("The unmarshalled BridgeMessage: %+v", *bm)
     return err
 }
@@ -157,7 +156,6 @@ func (cbs *ChanBridgeSender) Start() {
                     bridgeMessage := &BridgeMessage{
                         Msg:            *message,
                         Seq:            30,
-                        GoChanIndex:    goChanIndex,
                         //BridgeChan:     bridgeConn.RemoteSender,
                     }
                     var err error
@@ -260,7 +258,9 @@ func (cbr *ChanBridgeReceiver) Listen() {
                         //log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
                         log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
                         log.Printf("the msg to send over goChannel: %+v", bridgeMessage.Msg)
-                        cbr.goChannels[bridgeMessage.GoChanIndex] <- &bridgeMessage.Msg
+                        i := TopicPartitionHash(&bridgeMessage.Msg)%len(cbr.goChannels)
+                        cbr.goChannels[i] <- &bridgeMessage.Msg
+                        log.Printf("sent msg to receiver's goChannels[%v]", i)
                     }()
                 } else {
                     /* SimpleMessage */
