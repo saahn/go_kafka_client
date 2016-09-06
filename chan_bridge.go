@@ -73,30 +73,6 @@ func (bm *BridgeMessage) UnmarshalMsgpack(data []byte) error {
     return err
 }
 
-// TODO: delete after debugging
-type SimpleMessage struct {
-    Msg             string
-    Seq             int
-    GoChanIndex     int
-}
-
-// TODO: delete after debugging
-func (sm *SimpleMessage) MarshalMsgpack() ([]byte, error) {
-    log.Printf("marshalling a SimpleMessage: %+v", sm)
-    bytesWritten, err := msgpack.Marshal(sm.Msg, sm.Seq, sm.GoChanIndex)
-    log.Printf("MarshalMsgpack wrote %v bytes and got err: %+v", bytesWritten, err)
-    log.Printf("marshalling SimpleMessage result: %+v", string(bytesWritten))
-    return bytesWritten, nil
-}
-
-// TODO: delete after debugging
-func (sm *SimpleMessage) UnmarshalMsgpack(data []byte) error {
-    log.Printf("unmarshalling data into a SimpleMessage: %+v", data)
-    err := msgpack.Unmarshal(data, &sm.Msg, &sm.Seq, &sm.GoChanIndex)
-    log.Printf("the unmarshalled SimpleMessage: %+v", *sm)
-    return err
-}
-
 type ChanBridgeSender struct {
     goChannels      []chan *Message   // consumer messages via go channel
     remoteUrl       string
@@ -149,55 +125,28 @@ func (cbs *ChanBridgeSender) Start() {
     for goChanIndex, bridgeConn := range cbs.connections {
         log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
         // TODO: Remove debugging condition
-        if useBridgeMessage {
-            /* BridgeMessage */
-            go func() {
-                for message := range cbs.goChannels[goChanIndex] {
-                    bridgeMessage := &BridgeMessage{
-                        Msg:            *message,
-                        Seq:            30,
-                        //BridgeChan:     bridgeConn.RemoteSender,
-                    }
-                    var err error
-                    log.Printf("original gochan Message: %+v", message)
-                    log.Printf("Sending BridgeMessage: %+v", *bridgeMessage)
-                    sender, err := bridgeConn.Transport.NewSendChannel()
-                    if err != nil {
-                        log.Fatal(err)
-                    }
-                    err = sender.Send(bridgeMessage)
-                    if err != nil {
-                        log.Fatal(err)
-                    }
-                    sender.Close()  // TODO: maintain stream connection rather than close per message
-                    log.Print("--- closed send channel")
+        go func() {
+            for message := range cbs.goChannels[goChanIndex] {
+                bridgeMessage := &BridgeMessage{
+                    Msg:            *message,
+                    Seq:            30,
+                    //BridgeChan:     bridgeConn.RemoteSender,
                 }
-            }()
-        } else {
-            /* SimpleMessage */
-            go func() {
-                for message := range cbs.goChannels[goChanIndex] {
-                    simpleMessage := &SimpleMessage{
-                        Msg:            string(message.Value),
-                        Seq:            100,
-                        GoChanIndex:    goChanIndex,
-                    }
-                    var err error
-                    if err != nil {
-                        log.Fatal(err)
-                    }
-                    log.Printf("original SimpleMessage message: %+v", message)
-                    log.Printf("Sending SimpleMessage: %+v", *simpleMessage)
-                    sender, err := bridgeConn.Transport.NewSendChannel()
-                    err = sender.Send(simpleMessage)
-                    if err != nil {
-                        log.Fatal(err)
-                    }
-                    sender.Close()
-                    log.Print("--- closed send channel")
+                var err error
+                log.Printf("original gochan Message: %+v", message)
+                log.Printf("Sending BridgeMessage: %+v", *bridgeMessage)
+                sender, err := bridgeConn.Transport.NewSendChannel()
+                if err != nil {
+                    log.Fatal(err)
                 }
-            }()
-        }
+                err = sender.Send(bridgeMessage)
+                if err != nil {
+                    log.Fatal(err)
+                }
+                sender.Close()  // TODO: maintain stream connection rather than close per message
+                log.Print("--- closed send channel")
+            }
+        }()
     }
 }
 
@@ -244,54 +193,21 @@ func (cbr *ChanBridgeReceiver) Listen() {
                     break
                 }
 
-                // TODO: Remove debugging condition
-                if useBridgeMessage {
-                    /* BridgeMessage */
-                    go func() {
-                        log.Print(">>>>> Receiving")
-                        bridgeMessage := &BridgeMessage{}
-                        err := receiver.Receive(bridgeMessage)
-                        if err != nil {
-                            log.Print(err)
-                        }
-                        log.Printf("received BridgeMessage: %+v", *bridgeMessage)
-                        //log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
-                        log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
-                        log.Printf("the msg to send over goChannel: %+v", bridgeMessage.Msg)
-                        i := TopicPartitionHash(&bridgeMessage.Msg)%len(cbr.goChannels)
-                        cbr.goChannels[i] <- &bridgeMessage.Msg
-                        log.Printf("sent msg to receiver's goChannels[%v]", i)
-                    }()
-                } else {
-                    /* SimpleMessage */
-                    go func() {
-                        log.Print(">>>>> Receiving")
-                        simpleMessage := &SimpleMessage{}
-                        log.Printf("new SimpleMessage: %+v", simpleMessage)
-                        err := receiver.Receive(simpleMessage)
-                        log.Printf("received SimpleMessage: %+v", *simpleMessage)
-                        log.Printf("received SimpleMessage.msg is %+v of type %T", simpleMessage.Msg, simpleMessage.Msg)
-                        log.Printf("the SimpleMessage.Msg: %+v", &simpleMessage.Msg)
-                        log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
-
-                        // Temporary hack b/c go channel expects Message
-                        msg := &Message{
-                            Key: []byte("foo"),
-                            Value: []byte(simpleMessage.Msg),
-                            DecodedValue: simpleMessage.Msg,
-                            Topic: "bridge_test1",
-                            Partition: 0,
-                            Offset: 1,
-                            HighwaterMarkOffset: 2,
-                        }
-                        log.Printf("the msg to send over goChannel: %+v", msg)
-                        cbr.goChannels[0] <- msg
-                        log.Printf("the chan_bridge_receiver's gochannels: %+v", cbr.goChannels)
-                        if err != nil {
-                            log.Print(err)
-                        }
-                    }()
-                }
+                go func() {
+                    log.Print(">>>>> Receiving")
+                    bridgeMessage := &BridgeMessage{}
+                    err := receiver.Receive(bridgeMessage)
+                    if err != nil {
+                        log.Print(err)
+                    }
+                    log.Printf("received BridgeMessage: %+v", *bridgeMessage)
+                    //log.Printf("received bridgeMessage.msg is %+v of type %T", bridgeMessage.Msg, bridgeMessage.Msg)
+                    log.Printf("the cbr.goChannels: %+v", cbr.goChannels)
+                    log.Printf("the msg to send over goChannel: %+v", bridgeMessage.Msg)
+                    i := TopicPartitionHash(&bridgeMessage.Msg)%len(cbr.goChannels)
+                    cbr.goChannels[i] <- &bridgeMessage.Msg
+                    log.Printf("sent msg to receiver's goChannels[%v]", i)
+                }()
             }
         }()
     }
