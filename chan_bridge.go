@@ -92,8 +92,9 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
 func (cbs *ChanBridgeSender) connect() *BridgeConn {
     var client net.Conn
     var err error
-
-    if os.Getenv("USE_TLS") != "" {
+    useTLS := os.Getenv("USE_TLS")
+    log.Printf("'USE_TLS' env value: %v", useTLS)
+    if useTLS != "" {
         log.Print("Starting client with TLS support")
         client, err = tls.Dial("tcp", cbs.remoteUrl, &tls.Config{InsecureSkipVerify: true})
     } else {
@@ -172,6 +173,8 @@ func NewChanBridgeReceiver(goChannels []chan *Message, listenUrl string) *ChanBr
 func (cbr *ChanBridgeReceiver) Listen() {
     cert := os.Getenv("TLS_CERT")
     key := os.Getenv("TLS_KEY")
+    log.Printf("'TLS_CERT' env value: %v", cert)
+    log.Printf("'TLS_KEY' env value: %v", key)
 
     var listener net.Listener
     if cert != "" && key != "" {
