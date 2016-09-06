@@ -3,9 +3,11 @@ package go_kafka_client
 import (
     "log"
     "net"
+    "os"
     "github.com/docker/libchan"
     "github.com/docker/libchan/spdy"
     "github.com/dmcgowan/msgpack"
+    "crypto/tls"
 )
 
 var useBridgeMessage bool = true
@@ -91,7 +93,12 @@ func (cbs *ChanBridgeSender) connect() *BridgeConn {
     var client net.Conn
     var err error
 
-    client, err = net.Dial("tcp", cbs.remoteUrl)
+    if os.Getenv("USE_TLS") != "" {
+        log.Print("Starting client with TLS support")
+        client, err = tls.Dial("tcp", cbs.remoteUrl, &tls.Config{InsecureSkipVerify: true})
+    } else {
+        client, err = net.Dial("tcp", cbs.remoteUrl)
+    }
     if err != nil {
         log.Fatal(err)
     }
@@ -163,12 +170,34 @@ func NewChanBridgeReceiver(goChannels []chan *Message, listenUrl string) *ChanBr
 }
 
 func (cbr *ChanBridgeReceiver) Listen() {
+    cert := os.Getenv("TLS_CERT")
+    key := os.Getenv("TLS_KEY")
+
     var listener net.Listener
-    var err error
-    listener, err = net.Listen("tcp", cbr.listenUrl)
-    if err != nil {
-        log.Fatal(err)
+    if cert != "" && key != "" {
+        log.Print("Starting listener with TLS support")
+        tlsCert, err := tls.LoadX509KeyPair(cert, key)
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        tlsConfig := &tls.Config{
+            InsecureSkipVerify: true,
+            Certificates:       []tls.Certificate{tlsCert},
+        }
+
+        listener, err = tls.Listen("tcp", cbr.listenUrl, tlsConfig)
+        if err != nil {
+            log.Fatal(err)
+        }
+    } else {
+        var err error
+        listener, err = net.Listen("tcp", cbr.listenUrl)
+        if err != nil {
+            log.Fatal(err)
+        }
     }
+
     for {
         c, err := listener.Accept()
         log.Print("========= in listener.Accept =========")
