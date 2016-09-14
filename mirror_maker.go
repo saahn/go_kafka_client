@@ -127,13 +127,13 @@ func (this *MirrorMaker) isBridge() bool {
 
 func (this *MirrorMaker) initializeBridge() {
 	if this.config.RemoteUrl != "" {
-		this.startConsumers()
 		cbs := NewChanBridgeSender(this.messageChannels, this.config.RemoteUrl)
 		this.chanBridge = &ChanBridge{sender: cbs}
+		this.startConsumers()
 	} else if this.config.ListenUrl != "" {
-		this.startProducers()
 		cbr := NewChanBridgeReceiver(this.messageChannels, this.config.ListenUrl)
 		this.chanBridge = &ChanBridge{receiver: cbr}
+		this.startProducers()
 	}
 }
 
