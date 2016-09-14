@@ -26,10 +26,7 @@ type BridgeMessage struct {
     ResponseChan    libchan.Sender
 }
 
-var ERROR_CODE = 500
-
 type BridgeResponse struct {
-    Status  int
     Err     error
 }
 
@@ -106,10 +103,10 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
     err := receiver.Receive(bridgeMessage)
     log.Printf(">>>>> Received a BridgeMessage: %+v", bridgeMessage)
     log.Printf("... the received BridgeMessage.Msg.Value bytes casted to string: %+v", string(bridgeMessage.Msg.Value))
+    bridgeResponse.Err = err
     if err != nil {
         log.Print(err)
-        bridgeResponse.Status = ERROR_CODE
-        bridgeResponse.Err = err
+        log.Printf("... sending bridgeResponse to Sender: %+v", bridgeResponse)
         sendErr := bridgeMessage.ResponseChan.Send(bridgeResponse)
         if sendErr != nil {
             log.Print(err)
