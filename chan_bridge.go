@@ -62,6 +62,7 @@ func (bs *bridgeSender) Send(m Message) error {
         ResponseChan: bs.remoteSender,
     }
     log.Printf("Sending message: %+v", bm)
+    log.Printf("... the sent message BridgeMessage.Msg.Value bytes casted to string: %+v", string(bm.Msg.Value))
     response, err := bs.dispatch(bm)
     if err != nil {
         return err
@@ -300,6 +301,7 @@ func (cbs *ChanBridgeSender) Start() {
                 go func() {
                     err = cbs.bridgeSender.Send(*message)
                     if err != nil {
+                        log.Printf("!!!!!!!! Failed to send message: %+v", message)
                         log.Fatal(err)
                     }
                 }()
