@@ -61,12 +61,12 @@ func (bs *bridgeSender) Send(m Message) error {
         ResponseChan: bs.remoteSender,
     }
     log.Printf("Sending message: %+v", bm)
-    log.Printf("... the msg string: %+v", string(bm.Msg.Value))
     response, err := bs.dispatch(bm)
     if err != nil {
         log.Printf("Failed to dispatch a BridgeMessage: %+v", err)
         return err
     }
+    log.Printf("... the sent msg string: %+v", string(bm.Msg.Value))
     if response.Err != nil {
         log.Printf("Receiver sent an error response: %+v", response.Err)
     }
@@ -113,7 +113,7 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
     bridgeResponse := &BridgeResponse{}
     err := receiver.Receive(bridgeMessage)
     log.Printf(">>>>> Received a BridgeMessage: %+v", bridgeMessage)
-    log.Printf("... the received msg string: %+v", string(bridgeMessage.Msg.Value))
+    log.Printf("_ _ _ the received msg string: %+v", string(bridgeMessage.Msg.Value))
     bridgeResponse.Err = err
     if err != nil {
         log.Printf("Got an error from sender: %v", err)
@@ -166,16 +166,18 @@ const (
 type ChanBridgeSender struct {
     goChannels      []chan *Message
     bridgeSender    BridgeSender
+    failedSends     chan *Message
 }
 
 type ChanBridgeReceiver struct {
     goChannels      []chan *Message
     listenUrl       string
     bridgeReceiver  BridgeReceiver
+    failedSends     chan *Message
 }
 
 type bridgeEndpoint interface {
-    Start() error
+    Start(chan ConnState) error
     Stop()
 }
 
@@ -188,7 +190,7 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
                 log.Printf("%v is connected.", be)
             case cs == Disconnected:
                 log.Printf("%v is disconnected...restarting.", be)
-                err := be.Start()
+                err := be.Start(c)
                 if err != nil {
                     c <-Disconnected
                 }
@@ -274,6 +276,7 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
     return &ChanBridgeSender{
         goChannels:     goChannels,
         bridgeSender:   bridgeSender,
+        failedSends:    make(chan *Message, 1),
     }
 }
 
@@ -309,11 +312,12 @@ func NewChanBridgeReceiver(goChannels []chan *Message, listenUrl string) *ChanBr
     return &ChanBridgeReceiver{
         goChannels: goChannels,
         listenUrl:  listenUrl,
+        failedSends: make(chan *Message, 1),
     }
 }
 
 
-func (cbr *ChanBridgeReceiver) Start() error {
+func (cbr *ChanBridgeReceiver) Start(c chan ConnState) error {
     cert := os.Getenv("TLS_CERT")
     key := os.Getenv("TLS_KEY")
     log.Printf("'TLS_CERT' env value: %v", cert)
@@ -376,22 +380,35 @@ func (cbr *ChanBridgeReceiver) Start() error {
 }
 
 
-func (cbs *ChanBridgeSender) Start() error {
-    for goChanIndex, msgChan := range cbs.goChannels {
-        log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
-        go func() {
-            for message := range msgChan {
-                var err error
-                go func() {
-                    err = cbs.bridgeSender.Send(*message)
-                    if err != nil {
-                        log.Printf("!!!!!!!! Failed to send message: %+v", message)
-                        log.Printf("... send failure error: %+v", err)
-                        panic("Failed to send a message")
-                    }
-                }()
-            }
-        }()
+func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
+    var err error
+    err = cbs.bridgeSender.Send(*m)
+    if err != nil {
+        log.Printf("!!!!!!!! Failed to send message: %+v", m)
+        log.Printf("... send failure error: %+v", err)
+        cbs.failedSends <-m
+        cbs.Stop()
+        c <-Disconnected
+    }
+}
+
+
+func (cbs *ChanBridgeSender) Start(c chan ConnState) error {
+    select {
+    case msg := <-cbs.failedSends:
+        log.Printf("!!!!!! resending a failed message: %+v", *msg)
+        go cbs.sendMessage(msg, c)
+    default:
+        for goChanIndex, msgChan := range cbs.goChannels {
+            log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
+            go func() {
+                log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
+                for message := range msgChan {
+                    log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
+                    go cbs.sendMessage(message, c)
+                }
+            }()
+        }
     }
     return nil
 }
