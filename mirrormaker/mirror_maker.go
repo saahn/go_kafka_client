@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"syscall"
 )
 
 type consumerConfigs []string
@@ -105,8 +106,8 @@ func main() {
 	mirrorMaker := kafka.NewMirrorMaker(config)
 	go mirrorMaker.Start()
 
-	ctrlc := make(chan os.Signal, 1)
-	signal.Notify(ctrlc, os.Interrupt)
-	<-ctrlc
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+	<-sigc
 	mirrorMaker.Stop()
 }
