@@ -108,10 +108,9 @@ func NewMirrorMaker(config *MirrorMakerConfig) *MirrorMaker {
 func (this *MirrorMaker) Start() {
 	this.initializeMessageChannels()
 	if this.isBridge() {
-		kafkaClientStart := this.initializeBridge()
+		this.initializeBridge()
 		go this.chanBridge.Start()
 		log.Print("Initialized and started bridge!")
-		kafkaClientStart()
 	} else {
 		this.startConsumers()
 		this.startProducers()
@@ -126,17 +125,18 @@ func (this *MirrorMaker) isBridge() bool {
 	return false
 }
 
-func (this *MirrorMaker) initializeBridge() func() {
+func (this *MirrorMaker) initializeBridge() {
 	if this.config.RemoteUrl != "" {
+		this.startConsumers()
 		cbs := NewChanBridgeSender(this.messageChannels, this.config.RemoteUrl)
 		this.chanBridge = NewChanBridge(cbs, nil) //&ChanBridge{sender: cbs}
-		return this.startConsumers
 	} else if this.config.ListenUrl != "" {
+		this.startProducers()
 		cbr := NewChanBridgeReceiver(this.messageChannels, this.config.ListenUrl)
 		this.chanBridge = NewChanBridge(nil, cbr) //&ChanBridge{receiver: cbr}
-		return this.startProducers
+	} else {
+		panic("Tried to initializeBridge without either a remoteUrl or listenUrl specified.")
 	}
-	panic("Tried to initializeBridge without either a remoteUrl or listenUrl specified.")
 }
 
 // Gracefully stops the MirrorMaker.

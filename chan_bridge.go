@@ -37,7 +37,7 @@ type BridgeResponse struct {
 
 type BridgeSender interface {
     Send(Message) error
-    Close()
+    Close() error
 }
 
 type bridgeSender struct {
@@ -73,9 +73,9 @@ func (bs *bridgeSender) Send(m Message) error {
     return response.Err
 }
 
-func (bs *bridgeSender) Close() {
+func (bs *bridgeSender) Close() error {
     log.Print("Closing bridgeSender...")
-    bs.remoteSender.Close()
+    return bs.remoteSender.Close()
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
@@ -158,14 +158,15 @@ func NewChanBridge(sender *ChanBridgeSender, receiver *ChanBridgeReceiver) *Chan
 type ConnState int
 
 const (
-    Connected ConnState     = iota
-    Disconnected ConnState  = iota
-    Stopping ConnState      = iota
+    Connected ConnState = iota
+    Disconnected
+    Stopped
 )
 
 type ChanBridgeSender struct {
     goChannels      []chan *Message
     bridgeSender    BridgeSender
+    remoteUrl       string
     failedSends     chan *Message
 }
 
@@ -177,36 +178,30 @@ type ChanBridgeReceiver struct {
 }
 
 type bridgeEndpoint interface {
-    Start(chan ConnState) error
+    Connect(chan ConnState) error
     Stop()
 }
 
 func tryConnect(be bridgeEndpoint, c chan ConnState) {
-    for {
-        select {
-        case cs := <-c:
-            switch {
-            case cs == Connected:
-                log.Printf("%v is connected.", be)
-            case cs == Disconnected:
-                log.Printf("%v is disconnected...restarting.", be)
-                err := be.Start(c)
-                if err != nil {
-                    c <-Disconnected
-                }
-            case cs == Stopping:
-                log.Printf("%v is stopping...", be)
-                be.Stop()
-                log.Printf("%v is stopped.", be)
-                break
+    c <-Disconnected
+    for cs := range c {
+        switch {
+        case cs == Connected:
+            log.Printf("%v is connected.", be)
+        case cs == Disconnected:
+            log.Printf("%v is disconnected...restarting.", be)
+            err := be.Connect(c)
+            if err != nil {
+                c <-Disconnected
             }
-        default:
+        case cs == Stopped:
+            close(c)
         }
     }
+    log.Print("Exited tryConnect loop.")
 }
 
 func (cb *ChanBridge) Start() {
-    cb.connStateChan <-Disconnected
     if cb.receiver != nil {
         log.Print("Trying to connect ChanBridgeReceiver...")
         tryConnect(cb.receiver, cb.connStateChan)
@@ -219,23 +214,46 @@ func (cb *ChanBridge) Start() {
 
 func (cb *ChanBridge) Stop() {
     log.Print("Stopping ChanBridge")
-    cb.connStateChan <-Stopping
+    if cb.receiver != nil {
+        log.Print("Trying to stop ChanBridgeReceiver...")
+        cb.receiver.Stop()
+    }
+    if cb.sender != nil {
+        log.Print("Trying to stop ChanBridgeSender...")
+        cb.sender.Stop()
+    }
+    cb.connStateChan <-Stopped
 }
 
 func (cbr *ChanBridgeReceiver) Stop() {
-    log.Print("Closing ChanBridgeReceiver's goChannels...")
+    log.Print("Stopping ChanBridgeReceiver's goChannels...")
     for _, ch := range cbr.goChannels {
         close(ch)
     }
+    log.Print("All of ChanBridgeReceiver's goChannels are stopped.")
 }
 
 func (cbs *ChanBridgeSender) Stop() {
-    log.Print("Closing ChanBridgeSender...")
-    cbs.bridgeSender.Close()
+    log.Print("Stopping ChanBridgeSender...")
+    if cbs.bridgeSender != nil {
+        err := cbs.bridgeSender.Close()
+        if err != nil {
+            log.Printf("There was an error while stopping the ChanBridgeSender: %+v", err)
+        }
+    }
+    log.Print("ChanBridgeSender is stopped")
 }
 
 func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBridgeSender {
-    receiver, remoteSender := libchan.Pipe()
+    return &ChanBridgeSender{
+        goChannels:     goChannels,
+        bridgeSender:   nil,
+        remoteUrl:      remoteUrl,
+        failedSends:    make(chan *Message, 1),
+    }
+}
+
+func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
     var client net.Conn
     var err error
     var transport libchan.Transport
@@ -243,7 +261,7 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
     log.Printf("'USE_TLS' env value: %v", useTLS)
 
     // Resolve remote endpoint to multiple A-record IPs and try each until success
-    remoteHost, remotePort, err := net.SplitHostPort(remoteUrl)
+    remoteHost, remotePort, err := net.SplitHostPort(cbs.remoteUrl)
     if err != nil {
         log.Fatal(err)
     }
@@ -272,12 +290,11 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
             client.Close()  // close before trying to connect again
         }
     }
+    receiver, remoteSender := libchan.Pipe()
     bridgeSender := NewBridgeSender(transport.NewSendChannel, receiver, remoteSender)
-    return &ChanBridgeSender{
-        goChannels:     goChannels,
-        bridgeSender:   bridgeSender,
-        failedSends:    make(chan *Message, 1),
-    }
+    cbs.bridgeSender = bridgeSender
+    c <- Connected
+    return cbs.Start(c)
 }
 
 
@@ -316,8 +333,7 @@ func NewChanBridgeReceiver(goChannels []chan *Message, listenUrl string) *ChanBr
     }
 }
 
-
-func (cbr *ChanBridgeReceiver) Start(c chan ConnState) error {
+func (cbr *ChanBridgeReceiver) Connect(c chan ConnState) error {
     cert := os.Getenv("TLS_CERT")
     key := os.Getenv("TLS_KEY")
     log.Printf("'TLS_CERT' env value: %v", cert)
@@ -331,9 +347,15 @@ func (cbr *ChanBridgeReceiver) Start(c chan ConnState) error {
         log.Printf("Failed to listen: %v", err)
         return err
     }
-    defer listener.Close()
+    c <-Connected
     bridgeReceiver := NewBridgeReceiver()
+    go cbr.Start(listener, bridgeReceiver)
+    return err
+}
+
+func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) error {
     for {
+        log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         c, err := listener.Accept()
         if err != nil {
             log.Print(err)
@@ -357,7 +379,7 @@ func (cbr *ChanBridgeReceiver) Start(c chan ConnState) error {
 
                 go func() {
                     for {
-                        msg, err := bridgeReceiver.Listen(receiver)
+                        msg, err := br.Listen(receiver)
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
                             break
@@ -376,17 +398,16 @@ func (cbr *ChanBridgeReceiver) Start(c chan ConnState) error {
             }
         }()
     }
-    return errors.New("ChanBridgeReceiver disconnected")
+    return errors.New("ChanBridgeReceiver failed to start")
 }
 
-
 func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
-    var err error
-    err = cbs.bridgeSender.Send(*m)
+    err := cbs.bridgeSender.Send(*m)
     if err != nil {
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
         log.Printf("... send failure error: %+v", err)
         cbs.failedSends <-m
+        log.Print("Stopping cbs b/c sendMessage failed.")
         cbs.Stop()
         c <-Disconnected
     }
