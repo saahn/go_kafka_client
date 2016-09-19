@@ -17,6 +17,7 @@ import (
     "crypto/tls"
     "time"
     "errors"
+    "fmt"
 )
 
 type SenderFunc func() (libchan.Sender, error)
@@ -60,7 +61,7 @@ func (bs *bridgeSender) Send(m Message) error {
         Seq: 100,
         ResponseChan: bs.remoteSender,
     }
-    log.Printf("Sending message: %+v", bm)
+    //log.Printf("Sending message: %+v", bm)
     response, err := bs.dispatch(bm)
     if err != nil {
         log.Printf("Failed to dispatch a BridgeMessage: %+v", err)
@@ -75,10 +76,20 @@ func (bs *bridgeSender) Send(m Message) error {
 
 func (bs *bridgeSender) Close() error {
     log.Print("Closing bridgeSender...")
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("****** Recovered in bridgeSender.Close", r)
+        }
+    }()
     return bs.remoteSender.Close()
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("****** Recovered in bridgeSender.dispatch", r)
+        }
+    }()
     sender, err := bs.senderFunc()
     if err != nil {
         return nil, err
@@ -110,11 +121,11 @@ func NewBridgeReceiver() BridgeReceiver {
 
 func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error) {
     bridgeMessage := &BridgeMessage{}
-    bridgeResponse := &BridgeResponse{}
+    //bridgeResponse := &BridgeResponse{}
     err := receiver.Receive(bridgeMessage)
-    log.Printf(">>>>> Received a BridgeMessage: %+v", bridgeMessage)
+    //log.Printf(">>>>> Received a BridgeMessage: %+v", bridgeMessage)
     log.Printf("_ _ _ the received msg string: %+v", string(bridgeMessage.Msg.Value))
-    bridgeResponse.Err = err
+    //bridgeResponse.Err = err
     if err != nil {
         log.Printf("Got an error from sender: %v", err)
         if err.Error() == "EOF" {
@@ -126,12 +137,12 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
             return nil, err
         }
     }
-    log.Printf("... sending bridgeResponse to Sender: %+v", bridgeResponse)
-    sendErr := bridgeMessage.ResponseChan.Send(bridgeResponse)
-    if sendErr != nil {
-        log.Printf("Failed to send response to sender: %v", err)
-    }
-    return bridgeMessage.Msg, err
+    //log.Printf("... sending bridgeResponse to Sender: %+v", bridgeResponse)
+    //sendErr := bridgeMessage.ResponseChan.Send(bridgeResponse)
+    //if sendErr != nil {
+    //    log.Printf("Failed to send response to sender: %v", err)
+    //}
+    return *bridgeMessage, err
 }
 
 
@@ -345,6 +356,7 @@ func (cbr *ChanBridgeReceiver) Connect(c chan ConnState) error {
     listener, err = listenTcp(cbr.listenUrl, cert, key)
     if err != nil {
         log.Printf("Failed to listen: %v", err)
+        time.Sleep(5 * time.Second)
         return err
     }
     c <-Connected
@@ -355,8 +367,8 @@ func (cbr *ChanBridgeReceiver) Connect(c chan ConnState) error {
 
 func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) error {
     for {
-        log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         c, err := listener.Accept()
+        log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         if err != nil {
             log.Print(err)
             break
@@ -379,16 +391,23 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
 
                 go func() {
                     for {
-                        msg, err := br.Listen(receiver)
+                        bridgeMessage, err := br.Listen(receiver)
+                        bridgeResponse := &BridgeResponse{}
+                        bridgeResponse.Err = err
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
                             break
-                        } else if msg != nil {
-                            m := msg.(Message)
-                            log.Printf("the msg to send over goChannel: %+v", m)
+                        } else if bridgeMessage != nil {
+                            m := bridgeMessage.(BridgeMessage).Msg
+                            //log.Printf("the msg to send over goChannel: %+v", m)
                             i := TopicPartitionHash(&m)%len(cbr.goChannels)
                             cbr.goChannels[i] <- &m
-                            log.Printf("sent msg to receiver's goChannels[%v]", i)
+                            log.Printf("... sending bridgeResponse to Sender: %+v", bridgeResponse)
+                            sendErr := bridgeMessage.(BridgeMessage).ResponseChan.Send(bridgeResponse)
+                            if sendErr != nil {
+                                log.Printf("Failed to send response to sender: %v", err)
+                            }
+                            //log.Printf("sent msg to receiver's goChannels[%v]", i)
                         } else {  // err == nil && msg == nil means sender sent an EOF
                             log.Print("Sender sent an EOF.")
                             break
@@ -401,24 +420,31 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
-func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
+func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block chan *Message) {
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("****** Recovered in ChanBridgeSender.sendMessage", r)
+        }
+    }()
     err := cbs.bridgeSender.Send(*m)
     if err != nil {
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
         log.Printf("... send failure error: %+v", err)
-        cbs.failedSends <-m
-        log.Print("Stopping cbs b/c sendMessage failed.")
-        cbs.Stop()
-        c <-Disconnected
+        block <-m
     }
 }
 
 
 func (cbs *ChanBridgeSender) Start(c chan ConnState) error {
+
+    done := make(chan struct{})
+    defer close(done)
+
+    //block := make(chan *Message)
     select {
     case msg := <-cbs.failedSends:
         log.Printf("!!!!!! resending a failed message: %+v", *msg)
-        go cbs.sendMessage(msg, c)
+        go cbs.sendMessage(msg, c, done)
     default:
         for goChanIndex, msgChan := range cbs.goChannels {
             log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
@@ -426,7 +452,7 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) error {
                 log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
                 for message := range msgChan {
                     log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
-                    go cbs.sendMessage(message, c)
+                    go cbs.sendMessage(message, c, done)
                 }
             }()
         }
