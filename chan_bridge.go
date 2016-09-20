@@ -355,8 +355,8 @@ func (cbr *ChanBridgeReceiver) Connect(c chan ConnState) error {
 
 func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) error {
     for {
-        log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         c, err := listener.Accept()
+        log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         if err != nil {
             log.Print(err)
             break
