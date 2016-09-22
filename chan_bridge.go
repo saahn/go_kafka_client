@@ -265,10 +265,10 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
     if err != nil {
         log.Fatal(err)
     }
-    remoteIPs, err := net.LookupHost(remoteHost)
     for {
         var connected = false
         for !connected {
+            remoteIPs, err := net.LookupHost(remoteHost)
             for _, ip := range remoteIPs {
                 addr := ip + ":" + remotePort
                 log.Printf("Trying to connect to remote host on %v", addr)
