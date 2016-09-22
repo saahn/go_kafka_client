@@ -21,7 +21,11 @@ import (
 	"github.com/elodina/siesta"
 	"github.com/elodina/siesta-producer"
 	"hash/fnv"
+	"expvar"
 )
+
+// Vars exposed to health endpoint
+var MMessageProducedCount = expvar.NewInt("message_produced_count")
 
 // MirrorMakerConfig defines configuration options for MirrorMaker
 type MirrorMakerConfig struct {
@@ -268,8 +272,8 @@ func (this *MirrorMaker) startProducers() {
 
 func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 	for msg := range this.messageChannels[channelIndex] {
-		log.Printf("the producer in produceRoutine: %+v", p)
-		log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
+		//log.Printf("the producer in produceRoutine: %+v", p)
+		//log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
 		pr := &producer.ProducerRecord{
 			Topic:     this.config.TopicPrefix + msg.Topic,
 			Partition: msg.Partition,
@@ -278,6 +282,7 @@ func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 		}
 		p.Send(pr)
 		log.Printf("Sent producer record: %+v", *pr)
+		MMessageProducedCount.Add(1)
 	}
 }
 

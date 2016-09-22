@@ -17,6 +17,22 @@ import (
     "crypto/tls"
     "time"
     "errors"
+    "expvar"
+)
+
+// Vars exposed to health endpoint
+var (
+    MMode = expvar.NewString("mode")
+    MStatus = expvar.NewString("status")
+    MConnected = expvar.NewString("connected")
+
+    // Sender metrics
+    MMessageSendAttemptCount = expvar.NewInt("message_send_attempt_count")
+    MMessageSendSuccessCount = expvar.NewInt("message_send_success_count")
+
+    // Receiver metrics
+    MMessageReceiveSuccessCount = expvar.NewInt("message_receive_success_count")
+    MMessageReceiveFailedCount = expvar.NewInt("message_receive_failed_count")
 )
 
 type SenderFunc func() (libchan.Sender, error)
@@ -75,7 +91,7 @@ func (bs *bridgeSender) Send(m Message) error {
 
 func (bs *bridgeSender) Close() error {
     log.Print("Closing bridgeSender...")
-    return bs.remoteSender.Close()
+    return nil
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
@@ -187,14 +203,18 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
     for cs := range c {
         switch {
         case cs == Connected:
+            MConnected.Set("True")
+            MStatus.Set("Connected")
             log.Printf("%v is connected.", be)
         case cs == Disconnected:
             log.Printf("%v is disconnected...restarting.", be)
+            MStatus.Set("Disconnected")
             err := be.Connect(c)
             if err != nil {
                 c <-Disconnected
             }
         case cs == Stopped:
+            MStatus.Set("Stopped")
             close(c)
         }
     }
@@ -202,12 +222,16 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
 }
 
 func (cb *ChanBridge) Start() {
+    MStatus.Set("Starting...")
+    MConnected.Set("False")
     if cb.receiver != nil {
         log.Print("Trying to connect ChanBridgeReceiver...")
+        MMode.Set("Receiver")
         tryConnect(cb.receiver, cb.connStateChan)
     }
     if cb.sender != nil {
         log.Print("Trying to connect ChanBridgeSender...")
+        MMode.Set("Sender")
         tryConnect(cb.sender, cb.connStateChan)
     }
 }
@@ -235,6 +259,7 @@ func (cbr *ChanBridgeReceiver) Stop() {
 
 func (cbs *ChanBridgeSender) Stop() {
     log.Print("Stopping ChanBridgeSender...")
+    MStatus.Set("Stopping...")
     if cbs.bridgeSender != nil {
         err := cbs.bridgeSender.Close()
         if err != nil {
@@ -368,7 +393,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
         }
         t := spdy.NewTransport(p)
 
-        go func() {
+        go func(t libchan.Transport) {
             for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
@@ -380,28 +405,32 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                 go func() {
                     for {
                         msg, err := br.Listen(receiver)
+                        if err == nil && msg == nil {
+                            log.Print("Sender sent an EOF.")
+                            break
+                        }
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
+                            MMessageReceiveFailedCount.Add(1)
                             break
                         } else if msg != nil {
                             m := msg.(Message)
+                            MMessageReceiveSuccessCount.Add(1)
                             log.Printf("the msg to send over goChannel: %+v", m)
                             i := TopicPartitionHash(&m)%len(cbr.goChannels)
                             cbr.goChannels[i] <- &m
                             log.Printf("sent msg to receiver's goChannels[%v]", i)
-                        } else {  // err == nil && msg == nil means sender sent an EOF
-                            log.Print("Sender sent an EOF.")
-                            break
                         }
                     }
                 }()
             }
-        }()
+        }(t)
     }
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
 func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
+    MMessageSendAttemptCount.Add(1)
     err := cbs.bridgeSender.Send(*m)
     if err != nil {
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
@@ -410,6 +439,8 @@ func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
         log.Print("Stopping cbs b/c sendMessage failed.")
         cbs.Stop()
         c <-Disconnected
+    } else {
+        MMessageSendSuccessCount.Add(1)
     }
 }
 
@@ -420,16 +451,17 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) error {
         log.Printf("!!!!!! resending a failed message: %+v", *msg)
         go cbs.sendMessage(msg, c)
     default:
-        for goChanIndex, msgChan := range cbs.goChannels {
-            log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
-            go func() {
-                log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
-                for message := range msgChan {
-                    log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
-                    go cbs.sendMessage(message, c)
-                }
-            }()
-        }
+        log.Print("No failed messages to resend")
+    }
+    for goChanIndex, msgChan := range cbs.goChannels {
+        log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
+        go func() {
+            log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
+            for message := range msgChan {
+                log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
+                go cbs.sendMessage(message, c)
+            }
+        }()
     }
     return nil
 }
