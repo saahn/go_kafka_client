@@ -437,8 +437,11 @@ func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block cha
 
 func (cbs *ChanBridgeSender) Start(c chan ConnState) {
     block := make(chan struct{})
-
-    for i := 0; i < len(cbs.failedMessages); i++ {
+    fmCount := len(cbs.failedMessages)
+    log.Printf("Number of failed messages to resend: %v", fmCount)
+    for i := 0; i < fmCount; i++ {
+        log.Printf("cbs.failedMessages, len, cap: %v, %v, %v",
+            cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
         fm := cbs.failedMessages[i]
         log.Printf("~~~~~~ resending a failed message: %+v", *fm)
         err := cbs.sendMessage(fm, c, block, true)
@@ -446,10 +449,14 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
             log.Printf("!!!!!! resending a failed message failed again: %+v", *fm)
             // This is the first resend failure in the loop, so all previous messages in failedMessages array
             // successfully resent the message. Remove those, but keep the rest in failedMessages array.
-            cbs.failedMessages = cbs.failedMessages[i:]
+            cbs.failedMessages = append(make([]*Message, fmCount-i), cbs.failedMessages[i:]...)
             return
         }
     }
+    // Successfully resent all failed messages. Reset failedMessages slice.
+    cbs.failedMessages = nil
+    log.Printf("Done resending failed messages! cbs.failedMessages, len, cap: %v, %v, %v",
+        cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
 
     // Start a new send stream for each consumer goChannel
     for goChanIndex, msgChan := range cbs.goChannels {
