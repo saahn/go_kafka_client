@@ -17,6 +17,7 @@ import (
     "crypto/tls"
     "time"
     "errors"
+    "sync"
 )
 
 type SenderFunc func() (libchan.Sender, error)
@@ -60,7 +61,7 @@ func (bs *bridgeSender) Send(m Message) error {
         Seq: 100,
         ResponseChan: bs.remoteSender,
     }
-    log.Printf("Sending message: %+v", bm)
+    //log.Printf("Sending message: %+v", bm)
     response, err := bs.dispatch(bm)
     if err != nil {
         log.Printf("Failed to dispatch a BridgeMessage: %+v", err)
@@ -75,7 +76,7 @@ func (bs *bridgeSender) Send(m Message) error {
 
 func (bs *bridgeSender) Close() error {
     log.Print("Closing bridgeSender...")
-    return bs.remoteSender.Close()
+    return nil
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
@@ -167,7 +168,8 @@ type ChanBridgeSender struct {
     goChannels      []chan *Message
     bridgeSender    BridgeSender
     remoteUrl       string
-    failedSends     chan *Message
+    failedMessages  []*Message
+    blockSends      chan bool
 }
 
 type ChanBridgeReceiver struct {
@@ -184,18 +186,26 @@ type bridgeEndpoint interface {
 
 func tryConnect(be bridgeEndpoint, c chan ConnState) {
     c <-Disconnected
-    for cs := range c {
-        switch {
-        case cs == Connected:
-            log.Printf("%v is connected.", be)
-        case cs == Disconnected:
-            log.Printf("%v is disconnected...restarting.", be)
-            err := be.Connect(c)
-            if err != nil {
-                c <-Disconnected
+    CONNECT_LOOP:
+    for {
+        select {
+        case cs := <-c:
+            switch {
+            case cs == Connected:
+                log.Printf("%v is connected.", be)
+            case cs == Disconnected:
+                log.Printf("%v is disconnected...restarting.", be)
+                err := be.Connect(c)
+                if err != nil {
+                    c <- Disconnected
+                }
+            case cs == Stopped:
+                close(c)
+                break CONNECT_LOOP
             }
-        case cs == Stopped:
-            close(c)
+        default:  // TODO: remove debug logs
+            <-time.After(3 * time.Second)
+            log.Print("...timeout in tryConnect loop...")
         }
     }
     log.Print("Exited tryConnect loop.")
@@ -204,11 +214,11 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
 func (cb *ChanBridge) Start() {
     if cb.receiver != nil {
         log.Print("Trying to connect ChanBridgeReceiver...")
-        tryConnect(cb.receiver, cb.connStateChan)
+        go tryConnect(cb.receiver, cb.connStateChan)
     }
     if cb.sender != nil {
         log.Print("Trying to connect ChanBridgeSender...")
-        tryConnect(cb.sender, cb.connStateChan)
+        go tryConnect(cb.sender, cb.connStateChan)
     }
 }
 
@@ -249,7 +259,8 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
         goChannels:     goChannels,
         bridgeSender:   nil,
         remoteUrl:      remoteUrl,
-        failedSends:    make(chan *Message, 1),
+        failedMessages: make([]*Message, 0),
+        blockSends:     make(chan bool, len(goChannels)),
     }
 }
 
@@ -294,7 +305,8 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
     bridgeSender := NewBridgeSender(transport.NewSendChannel, receiver, remoteSender)
     cbs.bridgeSender = bridgeSender
     c <- Connected
-    return cbs.Start(c)
+    cbs.Start(c)
+    return err
 }
 
 
@@ -368,7 +380,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
         }
         t := spdy.NewTransport(p)
 
-        go func() {
+        go func(t libchan.Transport) {
             for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
@@ -377,7 +389,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                 }
                 log.Print("--- Received a new channel")
 
-                go func() {
+                go func(receiver libchan.Receiver) {
                     for {
                         msg, err := br.Listen(receiver)
                         if err != nil {
@@ -394,43 +406,86 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             break
                         }
                     }
-                }()
+                }(receiver)
             }
-        }()
+        }(t)
     }
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
-func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState) {
+func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block chan struct{}, resend bool) error {
+    select {
+    case <-block:
+        cbs.failedMessages = append(cbs.failedMessages, m)
+        return errors.New("Sending is blocked")
+    default:
+    }
     err := cbs.bridgeSender.Send(*m)
     if err != nil {
+        if !resend {
+            cbs.failedMessages = append(cbs.failedMessages, m)
+        }
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
         log.Printf("... send failure error: %+v", err)
-        cbs.failedSends <-m
-        log.Print("Stopping cbs b/c sendMessage failed.")
-        cbs.Stop()
-        c <-Disconnected
+        log.Print("Closing block channel")
+        close(block)
+        log.Print("Sending Disconnected signal")
+        c <- Disconnected
     }
+    return err
 }
 
+func (cbs *ChanBridgeSender) Start(c chan ConnState) {
+    block := make(chan struct{})
 
-func (cbs *ChanBridgeSender) Start(c chan ConnState) error {
-    select {
-    case msg := <-cbs.failedSends:
-        log.Printf("!!!!!! resending a failed message: %+v", *msg)
-        go cbs.sendMessage(msg, c)
-    default:
-        for goChanIndex, msgChan := range cbs.goChannels {
-            log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
-            go func() {
-                log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
-                for message := range msgChan {
-                    log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
-                    go cbs.sendMessage(message, c)
-                }
-            }()
+    for i := 0; i < len(cbs.failedMessages); i++ {
+        fm := cbs.failedMessages[i]
+        log.Printf("~~~~~~ resending a failed message: %+v", *fm)
+        err := cbs.sendMessage(fm, c, block, true)
+        if err != nil {
+            log.Printf("!!!!!! resending a failed message failed again: %+v", *fm)
+            // This is the first resend failure in the loop, so all previous messages in failedMessages array
+            // successfully resent the message. Remove those, but keep the rest in failedMessages array.
+            cbs.failedMessages = cbs.failedMessages[i:]
+            return
         }
     }
-    return nil
+
+    // Start a new send stream for each consumer goChannel
+    for goChanIndex, msgChan := range cbs.goChannels {
+        log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
+        go func(goChanIndex int, block chan struct{}) {
+            defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
+
+            log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
+            LOOP:
+            for message := range msgChan {
+                select {
+                case <-block:
+                    cbs.failedMessages = append(cbs.failedMessages, message)
+                    break LOOP
+                default:
+                    log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
+                    err := cbs.sendMessage(message, c, block, false)
+                    if err != nil {
+                        log.Printf("!!!!!! sending  message failed: %+v", message)
+                    }
+                }
+            }
+        }(goChanIndex, block)
+    }
 }
 
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+    c := make(chan struct{})
+    go func() {
+        defer close(c)
+        wg.Wait()
+    }()
+    select {
+    case <-c:
+        return false // completed normally
+    case <-time.After(timeout):
+        return true // timed out
+    }
+}
