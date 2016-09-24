@@ -18,6 +18,31 @@ import (
     "time"
     "errors"
     "sync"
+    "expvar"
+)
+
+// Vars exposed to health endpoint
+var (
+    // States
+    MMode = expvar.NewString("mode")  // "Receiver" or "Sender"
+    MHealth = expvar.NewString("health")  // "Healthy", "Waiting", or "Failed"
+    MStatus = expvar.NewString("status")  // More details on current state
+
+    // Sender metrics
+    MMessageSendAttemptCount = expvar.NewInt("message_send_attempt_count")
+    MMessageSendSuccessCount = expvar.NewInt("message_send_success_count")
+    MMessageSendFailureCount = expvar.NewInt("message_send_failure_count")
+
+    // Receiver metrics
+    MMessageReceiveSuccessCount = expvar.NewInt("message_receive_success_count")
+    MMessageReceiveFailureCount = expvar.NewInt("message_receive_failure_count")
+)
+
+// Possible MHealth states
+const (
+    MHealthy     = "Healthy"
+    MWaiting     = "Waiting"
+    MFailed      = "Failed"
 )
 
 type SenderFunc func() (libchan.Sender, error)
@@ -185,6 +210,7 @@ type bridgeEndpoint interface {
 }
 
 func tryConnect(be bridgeEndpoint, c chan ConnState) {
+    MHealth.Set(MWaiting)
     c <-Disconnected
     CONNECT_LOOP:
     for {
@@ -192,14 +218,17 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
         case cs := <-c:
             switch {
             case cs == Connected:
+                MStatus.Set("Connected")
                 log.Printf("%v is connected.", be)
             case cs == Disconnected:
                 log.Printf("%v is disconnected...restarting.", be)
+                MStatus.Set("Disconnected")
                 err := be.Connect(c)
                 if err != nil {
                     c <- Disconnected
                 }
             case cs == Stopped:
+                MStatus.Set("Stopped")
                 close(c)
                 break CONNECT_LOOP
             }
@@ -208,22 +237,28 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
             log.Print("...timeout in tryConnect loop...")
         }
     }
+    MHealth.Set(MFailed)
     log.Print("Exited tryConnect loop.")
 }
 
 func (cb *ChanBridge) Start() {
+    MStatus.Set("Starting...")
     if cb.receiver != nil {
         log.Print("Trying to connect ChanBridgeReceiver...")
+        MMode.Set("Receiver")
         go tryConnect(cb.receiver, cb.connStateChan)
     }
     if cb.sender != nil {
         log.Print("Trying to connect ChanBridgeSender...")
+        MMode.Set("Sender")
         go tryConnect(cb.sender, cb.connStateChan)
     }
 }
 
 func (cb *ChanBridge) Stop() {
     log.Print("Stopping ChanBridge")
+    MStatus.Set("Stopping...")
+    MHealth.Set(MWaiting)
     if cb.receiver != nil {
         log.Print("Trying to stop ChanBridgeReceiver...")
         cb.receiver.Stop()
@@ -277,6 +312,7 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
         log.Fatal(err)
     }
     for {
+        MStatus.Set("Trying to connect to remote receiver...")
         var connected = false
         for !connected {
             remoteIPs, err := net.LookupHost(remoteHost)
@@ -286,6 +322,7 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
                 client, err = dialTcp(addr, useTLS)
                 if err == nil {
                     log.Printf("Connected to remote host on %v", addr)
+
                     connected = true
                     break
                 }
@@ -317,7 +354,6 @@ func dialTcp(addr string, useTLS string) (net.Conn, error) {
         return net.Dial("tcp", addr)
     }
 }
-
 
 func listenTcp(laddr string, cert string, key string) (net.Listener, error) {
     if cert != "" && key != "" {
@@ -379,7 +415,8 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
             break
         }
         t := spdy.NewTransport(p)
-
+        MStatus.Set("Listening")
+        MHealth.Set(MHealthy)
         go func(t libchan.Transport) {
             for {
                 receiver, err := t.WaitReceiveChannel()
@@ -394,9 +431,11 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                         msg, err := br.Listen(receiver)
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
+                            MMessageReceiveFailureCount.Add(1)
                             break
                         } else if msg != nil {
                             m := msg.(Message)
+                            MMessageReceiveSuccessCount.Add(1)
                             log.Printf("the msg to send over goChannel: %+v", m)
                             i := TopicPartitionHash(&m)%len(cbr.goChannels)
                             cbr.goChannels[i] <- &m
@@ -410,19 +449,24 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
             }
         }(t)
     }
+    MHealth.Set(MFailed)
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
 func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block chan struct{}, resend bool) error {
+    MMessageSendAttemptCount.Add(1)
     select {
     case <-block:
-        cbs.failedMessages = append(cbs.failedMessages, m)
+        if !resend {
+            cbs.failedMessages = append(cbs.failedMessages, m)
+        }
         return errors.New("Sending is blocked")
     default:
     }
     err := cbs.bridgeSender.Send(*m)
     if err != nil {
         if !resend {
+            MMessageSendFailureCount.Add(1)
             cbs.failedMessages = append(cbs.failedMessages, m)
         }
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
@@ -431,6 +475,8 @@ func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block cha
         close(block)
         log.Print("Sending Disconnected signal")
         c <- Disconnected
+    } else {
+        MMessageSendSuccessCount.Add(1)
     }
     return err
 }
@@ -475,12 +521,14 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
                     log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
                     err := cbs.sendMessage(message, c, block, false)
                     if err != nil {
+                        MHealth.Set(MFailed)
                         log.Printf("!!!!!! sending  message failed: %+v", message)
                     }
                 }
             }
         }(goChanIndex, block)
     }
+    MHealth.Set(MHealthy)
 }
 
 func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {

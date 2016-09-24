@@ -24,6 +24,10 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"net/http"
+	_ "expvar"
+	"net"
+	"log"
 )
 
 type consumerConfigs []string
@@ -104,6 +108,26 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 func main() {
 	config := parseAndValidateArgs()
 	mirrorMaker := kafka.NewMirrorMaker(config)
+
+	/** Health endpoint setup **/
+
+	// Differentiate ports for Mirrormaker running in different modes since all modes will running on the same host
+	var health_port string
+	if config.RemoteUrl != "" && config.ListenUrl == "" {  // is running as bridge sender
+		health_port = "9191"
+	} else if config.RemoteUrl == "" && config.ListenUrl != "" {  // is running as bridge receiver
+		health_port = "9192"
+	} else if config.RemoteUrl == "" && config.ListenUrl == "" {  // is running as local consumer and producer
+		health_port = "9193"
+	}
+	health_endpoint := net.JoinHostPort("localhost", health_port)
+	go func() {
+		http.ListenAndServe(health_endpoint, nil)
+	}()
+	log.Printf("Health endpoint now available at %v", health_endpoint)
+
+	/** Start mirrormaker **/
+
 	go mirrorMaker.Start()
 
 	sigc := make(chan os.Signal, 1)
