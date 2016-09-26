@@ -12,8 +12,8 @@ import (
     "log"
     "net"
     "os"
-    "github.com/docker/libchan"
-    "github.com/docker/libchan/spdy"
+    "github.com/saahn/libchan"
+    "github.com/saahn/libchan/spdy"
     "crypto/tls"
     "time"
     "errors"
@@ -465,8 +465,8 @@ func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block cha
     }
     err := cbs.bridgeSender.Send(*m)
     if err != nil {
+        MMessageSendFailureCount.Add(1)
         if !resend {
-            MMessageSendFailureCount.Add(1)
             cbs.failedMessages = append(cbs.failedMessages, m)
         }
         log.Printf("!!!!!!!! Failed to send message: %+v", m)
