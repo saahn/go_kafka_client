@@ -81,6 +81,12 @@ func NewBridgeSender(senderFunc SenderFunc, receiver libchan.Receiver, remoteSen
 }
 
 func (bs *bridgeSender) Send(m Message) error {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Println("Recovered in bridgeSender.Send", r)
+        }
+    }()
+
     bm := BridgeMessage{
         Msg: m,
         Seq: 100,
@@ -107,14 +113,7 @@ func (bs *bridgeSender) Close() error {
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     var err error
     var sender libchan.Sender
-    defer func() {
-        if r := recover(); r != nil {
-            fmt.Println("Recovered in bridgeSender.dispatch", r)
-            err = errors.New("Recovered from panic in bridgeSender.dispatch.")
-        }
-        log.Print("Deferred in bridgeSender.dispatch()...closing sender")
-        sender.Close()
-    }()
+    defer sender.Close()
     sender, err = bs.senderFunc()
     if err != nil {
         return nil, err
