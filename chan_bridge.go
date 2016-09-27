@@ -18,6 +18,7 @@ import (
     "time"
     "errors"
     "expvar"
+    "fmt"
 )
 
 // Vars exposed to health endpoint
@@ -99,11 +100,26 @@ func (bs *bridgeSender) Send(m Message) error {
 }
 
 func (bs *bridgeSender) Close() error {
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("Recovered in bridgeSender.Close", r)
+        }
+        log.Print("Deferred in bridgeSender.Close()")
+    }()
+    bs.Close()
     log.Print("Closing bridgeSender...")
     return nil
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
+    var err error
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("Recovered in bridgeSender.dispatch", r)
+            err = errors.New("Recovered from panic in bridgeSender.dispatch.")
+        }
+        log.Print("Deferred in bridgeSender.dispatch()")
+    }()
     sender, err := bs.senderFunc()
     if err != nil {
         return nil, err
@@ -116,7 +132,8 @@ func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     if err := bs.receiver.Receive(response); err != nil {
         return nil, err
     }
-    return response, nil
+    bs.Close()
+    return response, err
 }
 
 
