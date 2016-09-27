@@ -17,7 +17,6 @@ import (
     "crypto/tls"
     "time"
     "errors"
-    "sync"
     "expvar"
 )
 
