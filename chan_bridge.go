@@ -100,27 +100,22 @@ func (bs *bridgeSender) Send(m Message) error {
 }
 
 func (bs *bridgeSender) Close() error {
-    defer func() {
-        if r := recover(); r != nil {
-            fmt.Println("Recovered in bridgeSender.Close", r)
-        }
-        log.Print("Deferred in bridgeSender.Close()")
-    }()
-    bs.Close()
     log.Print("Closing bridgeSender...")
     return nil
 }
 
 func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     var err error
+    var sender libchan.Sender
     defer func() {
         if r := recover(); r != nil {
             fmt.Println("Recovered in bridgeSender.dispatch", r)
             err = errors.New("Recovered from panic in bridgeSender.dispatch.")
         }
-        log.Print("Deferred in bridgeSender.dispatch()")
+        log.Print("Deferred in bridgeSender.dispatch()...closing sender")
+        sender.Close()
     }()
-    sender, err := bs.senderFunc()
+    sender, err = bs.senderFunc()
     if err != nil {
         return nil, err
     }
@@ -132,7 +127,6 @@ func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     if err := bs.receiver.Receive(response); err != nil {
         return nil, err
     }
-    bs.Close()
     return response, err
 }
 
