@@ -25,13 +25,7 @@ import (
 )
 
 // Vars exposed to health endpoint
-var (
-	// health endpoint vars for local mirrormaker process
-	MLocalHealth = expvar.NewString("health")  // "Healthy", "Waiting", or "Failed"
-	MLocalStatus = expvar.NewString("status")  // More details on current state
-
-	MMessageProducedCount = expvar.NewInt("message_produced_count")
-)
+var	MMessageProducedCount = expvar.NewInt("message_produced_count")
 
 // MirrorMakerConfig defines configuration options for MirrorMaker
 type MirrorMakerConfig struct {
@@ -124,8 +118,8 @@ func (this *MirrorMaker) Start() {
 	} else {
 		this.startConsumers()
 		this.startProducers()
-		MLocalHealth.Set(MHealthy)
-		MLocalStatus.Set("Started local consumers and producers.")
+		MHealth.Set(MHealthy)
+		MStatus.Set("Started local consumers and producers.")
 	}
 	<-this.stopped
 }
