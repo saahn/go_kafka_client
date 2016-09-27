@@ -232,9 +232,8 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
                 close(c)
                 break CONNECT_LOOP
             }
-        default:  // TODO: remove debug logs
+        default:
             <-time.After(3 * time.Second)
-            log.Print("...timeout in tryConnect loop...")
         }
     }
     MHealth.Set(MFailed)
@@ -531,16 +530,3 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
     MHealth.Set(MHealthy)
 }
 
-func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
-    c := make(chan struct{})
-    go func() {
-        defer close(c)
-        wg.Wait()
-    }()
-    select {
-    case <-c:
-        return false // completed normally
-    case <-time.After(timeout):
-        return true // timed out
-    }
-}
