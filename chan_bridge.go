@@ -18,7 +18,6 @@ import (
     "time"
     "errors"
     "expvar"
-    "fmt"
 )
 
 // Vars exposed to health endpoint
