@@ -283,7 +283,7 @@ func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 			Value:     msg.DecodedValue,
 		}
 		p.Send(pr)
-		log.Printf("Sent producer record: %+v", *pr)
+		//log.Printf("Sent producer record: %+v", *pr)
 		MMessageProducedCount.Add(1)
 	}
 }
