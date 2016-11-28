@@ -422,7 +422,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                     log.Print(err)
                     break
                 }
-                //log.Print("--- Received a new channel")
+                log.Print("--- Received a new channel")
 
                 go func(receiver libchan.Receiver) {
                     for {
@@ -434,10 +434,15 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                         } else if msg != nil {
                             m := msg.(Message)
                             MMessageReceiveSuccessCount.Add(1)
-                            //log.Printf("the msg to send over goChannel: %+v", m)
+                            log.Printf("the msg to send over goChannel: %+v", m)
                             i := TopicPartitionHash(&m)%len(cbr.goChannels)
-                            cbr.goChannels[i] <- &m
-                            //log.Printf("sent msg to receiver's goChannels[%v]", i)
+							//cbr.goChannels[i] <- &m
+                            select {
+                            case cbr.goChannels[i] <- &m:
+                                log.Printf(">>> sent msg to receiver's goChannels[%v]", i)
+                            default:
+                                log.Printf("~~~~~ DID NOT send msg to receiver's goChannels[%v]", i)
+                            }
                         } else {  // err == nil && msg == nil means sender sent an EOF
                             log.Print("Sender sent an EOF.")
                             break
@@ -516,7 +521,7 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
                     cbs.failedMessages = append(cbs.failedMessages, message)
                     break LOOP
                 default:
-                    //log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
+                    log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
                     err := cbs.sendMessage(message, c, block, false)
                     if err != nil {
                         MHealth.Set(MFailed)

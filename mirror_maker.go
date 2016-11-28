@@ -274,8 +274,8 @@ func (this *MirrorMaker) startProducers() {
 
 func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 	for msg := range this.messageChannels[channelIndex] {
-		//log.Printf("the producer in produceRoutine: %+v", p)
-		//log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
+		log.Printf("the producer in produceRoutine: %+v", p)
+		log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
 		pr := &producer.ProducerRecord{
 			Topic:     this.config.TopicPrefix + msg.Topic,
 			Partition: msg.Partition,
@@ -283,7 +283,7 @@ func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 			Value:     msg.DecodedValue,
 		}
 		p.Send(pr)
-		//log.Printf("Sent producer record: %+v", *pr)
+		log.Printf("Sent producer record: %+v", *pr)
 		MMessageProducedCount.Add(1)
 	}
 }
