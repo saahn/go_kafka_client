@@ -434,7 +434,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                         } else if msg != nil {
                             m := msg.(Message)
                             MMessageReceiveSuccessCount.Add(1)
-                            log.Printf("the msg to send over goChannel: %+v", m)
+                            //log.Printf("the msg to send over goChannel: %+v", m)
                             i := TopicPartitionHash(&m)%len(cbr.goChannels)
 							//cbr.goChannels[i] <- &m
                             select {
