@@ -114,9 +114,11 @@ func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     }
     response := &BridgeResponse{}
     if err := bs.receiver.Receive(response); err != nil {
-        return nil, err
+		sender.Close()
+		return nil, err
     }
-    return response, nil
+	sender.Close()
+	return response, nil
 }
 
 
@@ -511,7 +513,7 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
     for goChanIndex, msgChan := range cbs.goChannels {
         log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
         go func(goChanIndex int, block chan struct{}) {
-            defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
+            //defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
 
             //log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
             LOOP:
