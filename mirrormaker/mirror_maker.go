@@ -28,6 +28,7 @@ import (
 	_ "expvar"
 	"net"
 	"log"
+	_ "net/http/pprof"
 )
 
 type consumerConfigs []string
@@ -108,6 +109,9 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 func main() {
 	config := parseAndValidateArgs()
 	mirrorMaker := kafka.NewMirrorMaker(config)
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	/** Health endpoint setup **/
 
