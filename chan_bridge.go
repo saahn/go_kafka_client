@@ -114,9 +114,11 @@ func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     }
     response := &BridgeResponse{}
     if err := bs.receiver.Receive(response); err != nil {
+		log.Print("^^^ calling sender.Close() in sender's error block")
 		sender.Close()
 		return nil, err
     }
+	log.Print("^^^ calling sender.Close()")
 	sender.Close()
 	return response, nil
 }
@@ -418,7 +420,8 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
         MStatus.Set("Listening")
         MHealth.Set(MHealthy)
         go func(t libchan.Transport) {
-            for {
+			log.Print("^^^ in go func 1 in receiver.Start")
+			for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
                     log.Print(err)
@@ -427,13 +430,16 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                 log.Print("--- Received a new channel")
 
                 go func(receiver libchan.Receiver) {
+					var receivedCount = 0
                     for {
+						log.Printf("^^^ receivedCount in channel %v: %d", receiver, receivedCount)
                         msg, err := br.Listen(receiver)
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
                             MMessageReceiveFailureCount.Add(1)
                             break
                         } else if msg != nil {
+							receivedCount++
                             m := msg.(Message)
                             MMessageReceiveSuccessCount.Add(1)
                             //log.Printf("the msg to send over goChannel: %+v", m)
@@ -450,7 +456,8 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             break
                         }
                     }
-                }(receiver)
+					log.Printf("^^^^^ broke out of for loop! receivedCount in channel %v: %d", receiver, receivedCount)
+				}(receiver)
             }
         }(t)
     }
