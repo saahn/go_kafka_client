@@ -402,17 +402,18 @@ func (cbr *ChanBridgeReceiver) Connect(c chan ConnState) error {
 }
 
 func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) error {
+	RECEIVELOOP1:
     for {
         c, err := listener.Accept()
         log.Print("=== In ChanBridgeReceiver's listner.Accept loop ===")
         if err != nil {
             log.Print(err)
-            break
+            break RECEIVELOOP1
         }
         p, err := spdy.NewSpdyStreamProvider(c, true)
         if err != nil {
             log.Print(err)
-            break
+            break RECEIVELOOP1
         }
         t := spdy.NewTransport(p)
         MStatus.Set("Listening")
@@ -420,24 +421,27 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
         go func(t libchan.Transport) {
 			log.Print("^^^ in go func 1 in receiver.Start")
 			chanCount := 0
+			RECEIVELOOP2:
 			for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
                     log.Print(err)
-                    break
+                    break RECEIVELOOP2
                 }
 				chanCount++
                 log.Print("--- Received a new channel")
 
                 go func(receiver libchan.Receiver) {
+					defer log.Printf("!!!!! Ending receive goroutine...chanCount is %d", chanCount)
 					var receivedCount = 0
+					RECEIVELOOP3:
                     for {
 						log.Printf("^^^ receivedCount in channel %v: %d", receiver, receivedCount)
                         msg, err := br.Listen(receiver)
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
                             MMessageReceiveFailureCount.Add(1)
-                            break
+                            break RECEIVELOOP3
                         } else if msg != nil {
 							receivedCount++
                             m := msg.(Message)
@@ -452,21 +456,24 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             select {
                             case cbr.goChannels[i] <- &m:
                                 log.Printf(">>> sent msg to receiver's goChannels[%v]", i)
+								break RECEIVELOOP3
                             default:
                                 log.Printf("~~~~~ DID NOT send msg to receiver's goChannels[%v]", i)
                             }
                         } else {  // err == nil && msg == nil means sender sent an EOF
                             log.Print("Sender sent an EOF.")
-                            break
+                            break RECEIVELOOP3
                         }
                     }
-					log.Printf("^^^^^ broke out of for loop! receivedCount in channel %v: %d", receiver, receivedCount)
+					log.Printf("^^^^^ broke out of RECEIVELOOP3 loop! receivedCount in channel %v: %d", receiver, receivedCount)
 				}(receiver)
 				log.Printf("...... chanCount: %d", chanCount)
             }
+			log.Print("^^!!!^^ broke out of RECEIVELOOP2 for loop!")
         }(t)
     }
-    MHealth.Set(MFailed)
+	log.Print("^^--^^ broke out of RECEIVELOOP1 for loop!")
+	MHealth.Set(MFailed)
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
@@ -525,7 +532,7 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
     for goChanIndex, msgChan := range cbs.goChannels {
         log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
         go func(goChanIndex int, block chan struct{}) {
-            //defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
+            defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
 
             //log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
             LOOP:
