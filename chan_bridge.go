@@ -114,11 +114,9 @@ func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
     }
     response := &BridgeResponse{}
     if err := bs.receiver.Receive(response); err != nil {
-		log.Print("^^^ calling sender.Close() in sender's error block")
 		sender.Close()
 		return nil, err
     }
-	log.Print("^^^ calling sender.Close()")
 	sender.Close()
 	return response, nil
 }
@@ -421,12 +419,14 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
         MHealth.Set(MHealthy)
         go func(t libchan.Transport) {
 			log.Print("^^^ in go func 1 in receiver.Start")
+			chanCount := 0
 			for {
                 receiver, err := t.WaitReceiveChannel()
                 if err != nil {
                     log.Print(err)
                     break
                 }
+				chanCount++
                 log.Print("--- Received a new channel")
 
                 go func(receiver libchan.Receiver) {
@@ -443,7 +443,11 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             m := msg.(Message)
                             MMessageReceiveSuccessCount.Add(1)
                             //log.Printf("the msg to send over goChannel: %+v", m)
-                            i := TopicPartitionHash(&m)%len(cbr.goChannels)
+							h := TopicPartitionHash(&m)
+							goChanLen := len(cbr.goChannels)
+                            //i := TopicPartitionHash(&m)%len(cbr.goChannels)
+							i := h%goChanLen
+							log.Printf(">>> h, goChanLen, i: %d, %d, %d", h, goChanLen, i)
 							//cbr.goChannels[i] <- &m
                             select {
                             case cbr.goChannels[i] <- &m:
@@ -458,6 +462,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                     }
 					log.Printf("^^^^^ broke out of for loop! receivedCount in channel %v: %d", receiver, receivedCount)
 				}(receiver)
+				log.Printf("...... chanCount: %d", chanCount)
             }
         }(t)
     }
