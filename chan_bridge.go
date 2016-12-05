@@ -53,6 +53,7 @@ type BridgeMessage struct {
 }
 
 type BridgeResponse struct {
+	Msg 	string
     Err     error
 }
 
@@ -61,8 +62,9 @@ type BridgeResponse struct {
 
 
 type BridgeSender interface {
-    Send(Message) error
+    //Send(Message) error
     Close() error
+	trySend(*ChanBridgeSender, *Message, chan ConnState, chan struct{}, bool) error
 }
 
 type bridgeSender struct {
@@ -79,47 +81,47 @@ func NewBridgeSender(senderFunc SenderFunc, receiver libchan.Receiver, remoteSen
     }
 }
 
-func (bs *bridgeSender) Send(m Message) error {
-    bm := BridgeMessage{
-        Msg: m,
-        Seq: 100,
-        ResponseChan: bs.remoteSender,
-    }
-    //log.Printf("Sending message: %+v", bm)
-    response, err := bs.dispatch(bm)
-    if err != nil {
-        log.Printf("Failed to dispatch a BridgeMessage: %+v", err)
-        return err
-    }
-    //log.Printf("... the sent msg string: %+v", string(bm.Msg.Value))
-    if response.Err != nil {
-        log.Printf("Receiver sent an error response: %+v", response.Err)
-    }
-    return response.Err
-}
+//func (bs *bridgeSender) Send(m Message) error {
+//    bm := BridgeMessage{
+//        Msg: m,
+//        Seq: 100,
+//        ResponseChan: bs.remoteSender,
+//    }
+//    //log.Printf("Sending message: %+v", bm)
+//    response, err := bs.dispatch(bm)
+//    if err != nil {
+//        log.Printf("Failed to dispatch a BridgeMessage: %+v", err)
+//        return err
+//    }
+//    //log.Printf("... the sent msg string: %+v", string(bm.Msg.Value))
+//    if response.Err != nil {
+//        log.Printf("Receiver sent an error response: %+v", response.Err)
+//    }
+//    return response.Err
+//}
 
 func (bs *bridgeSender) Close() error {
     log.Print("Closing bridgeSender...")
     return nil
 }
 
-func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
-    sender, err := bs.senderFunc()
-    if err != nil {
-        return nil, err
-    }
-
-    if err := sender.Send(bm); err != nil {
-        return nil, err
-    }
-    response := &BridgeResponse{}
-    if err := bs.receiver.Receive(response); err != nil {
-		sender.Close()
-		return nil, err
-    }
-	sender.Close()
-	return response, nil
-}
+//func (bs *bridgeSender) dispatch(bm BridgeMessage) (*BridgeResponse, error) {
+//    sender, err := bs.senderFunc()
+//    if err != nil {
+//        return nil, err
+//    }
+//
+//    if err := sender.Send(bm); err != nil {
+//        return nil, err
+//    }
+//    response := &BridgeResponse{}
+//    if err := bs.receiver.Receive(response); err != nil {
+//		sender.Close()
+//		return nil, err
+//    }
+//	sender.Close()
+//	return response, nil
+//}
 
 
 /* BridgeReceiver */
@@ -142,12 +144,14 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
     //log.Printf(">>>>> Received a BridgeMessage: %+v", bridgeMessage)
     //log.Printf("_ _ _ the received msg string: %+v", string(bridgeMessage.Msg.Value))
     bridgeResponse.Err = err
-    if err != nil {
+	bridgeResponse.Msg = "totally OK"
+	if err != nil {
+		bridgeResponse.Msg = "not OK"
         log.Printf("Got an error from sender: %v", err)
-        if err.Error() == "EOF" {
-            log.Print("Ignoring EOF error from sender.")
-            return nil, nil
-        }
+        //if err.Error() == "EOF" {
+        //    log.Print("Ignoring EOF error from sender.")
+        //    return nil, nil
+        //}
         if err.Error() == "stream does not exist" || bridgeMessage.ResponseChan == nil {
             log.Print("sender's stream is gone")
             return nil, err
@@ -338,11 +342,11 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
             client.Close()  // close before trying to connect again
         }
     }
-    receiver, remoteSender := libchan.Pipe()
-    bridgeSender := NewBridgeSender(transport.NewSendChannel, receiver, remoteSender)
-    cbs.bridgeSender = bridgeSender
+    //receiver, remoteSender := libchan.Pipe()
+    //bridgeSender := NewBridgeSender(transport.NewSendChannel, receiver, remoteSender)
+    //cbs.bridgeSender = bridgeSender
     c <- Connected
-    cbs.Start(c)
+    cbs.Start(transport, c)
     return err
 }
 
@@ -438,6 +442,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                     for {
 						log.Printf("^^^ receivedCount in channel %v: %d", receiver, receivedCount)
                         msg, err := br.Listen(receiver)
+						log.Printf("Receiver got msg and err: %+v, %+v", msg, err)
                         if err != nil {
                             log.Printf("Error from bridgeReceiver.Listen: %v", err)
                             MMessageReceiveFailureCount.Add(1)
@@ -460,8 +465,8 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             default:
                                 log.Printf("~~~~~ DID NOT send msg to receiver's goChannels[%v]", i)
                             }
-                        } else {  // err == nil && msg == nil means sender sent an EOF
-                            log.Print("Sender sent an EOF.")
+                        } else {
+                            log.Print("??? both bridgeMessage and err were nil ???")
                             break RECEIVELOOP3
                         }
                     }
@@ -477,35 +482,90 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
-func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block chan struct{}, resend bool) error {
-    MMessageSendAttemptCount.Add(1)
-    select {
-    case <-block:
-        if !resend {
-            cbs.failedMessages = append(cbs.failedMessages, m)
-        }
-        return errors.New("Sending is blocked")
-    default:
-    }
-    err := cbs.bridgeSender.Send(*m)
-    if err != nil {
-        MMessageSendFailureCount.Add(1)
-        if !resend {
-            cbs.failedMessages = append(cbs.failedMessages, m)
-        }
-        log.Printf("!!!!!!!! Failed to send message: %+v", m)
-        log.Printf("... send failure error: %+v", err)
-        log.Print("Closing block channel")
-        close(block)
-        log.Print("Sending Disconnected signal")
-        c <- Disconnected
-    } else {
-        MMessageSendSuccessCount.Add(1)
-    }
-    return err
+func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnState, block chan struct{}, resend bool) (e error) {
+	MMessageSendAttemptCount.Add(1)
+	select {
+	case <-block:
+		if !resend {
+			cbs.failedMessages = append(cbs.failedMessages, m)
+		}
+		return errors.New("Sending is blocked")
+	default:
+	}
+
+	sender, err := bs.senderFunc()
+	defer func() {
+		log.Print("=== In deferred function")
+		if e != nil {
+			MMessageSendFailureCount.Add(1)
+			if !resend {
+				cbs.failedMessages = append(cbs.failedMessages, m)
+			}
+			log.Printf("!!!!!!!! Failed to send message: %+v", m)
+			log.Printf("... send failure error: %+v", err)
+			log.Print("Closing block channel")
+			close(block)
+			log.Print("Sending Disconnected signal")
+			c <- Disconnected
+		} else {
+			log.Print(":) message send succeeded")
+			MMessageSendSuccessCount.Add(1)
+		}
+	}()
+	if err != nil {
+		return err
+	}
+	bm := BridgeMessage{
+		Msg: *m,
+		Seq: 100,
+		ResponseChan: bs.remoteSender,
+	}
+	if err := sender.Send(bm); err != nil {
+		return err
+	}
+	response := &BridgeResponse{}
+	if err := bs.receiver.Receive(response); err != nil {
+		log.Printf("------ Receive failed with error %+v in trySend", err)
+		return err
+	}
+	err = sender.Close()
+	if err != nil {
+		log.Print("=== FAILED to close sender.")
+	} else {
+		log.Print("=== Closed sender.")
+	}
+	return err
 }
 
-func (cbs *ChanBridgeSender) Start(c chan ConnState) {
+//func (cbs *ChanBridgeSender) sendMessage(m *Message, c chan ConnState, block chan struct{}, resend bool) error {
+//    MMessageSendAttemptCount.Add(1)
+//    select {
+//    case <-block:
+//        if !resend {
+//            cbs.failedMessages = append(cbs.failedMessages, m)
+//        }
+//        return errors.New("Sending is blocked")
+//    default:
+//    }
+//    err := cbs.bridgeSender.Send(*m)
+//    if err != nil {
+//        MMessageSendFailureCount.Add(1)
+//        if !resend {
+//            cbs.failedMessages = append(cbs.failedMessages, m)
+//        }
+//        log.Printf("!!!!!!!! Failed to send message: %+v", m)
+//        log.Printf("... send failure error: %+v", err)
+//        log.Print("Closing block channel")
+//        close(block)
+//        log.Print("Sending Disconnected signal")
+//        c <- Disconnected
+//    } else {
+//        MMessageSendSuccessCount.Add(1)
+//    }
+//    return err
+//}
+
+func (cbs *ChanBridgeSender) Start(t libchan.Transport, c chan ConnState) {
     block := make(chan struct{})
     fmCount := len(cbs.failedMessages)
     log.Printf("Number of failed messages to resend: %v", fmCount)
@@ -514,7 +574,11 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
             cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
         fm := cbs.failedMessages[i]
         log.Printf("~~~~~~ resending a failed message: %+v", *fm)
-        err := cbs.sendMessage(fm, c, block, true)
+
+		receiver, remoteSender := libchan.Pipe()
+		bridgeSender := NewBridgeSender(t.NewSendChannel, receiver, remoteSender)
+		err := bridgeSender.trySend(cbs, fm, c, block, false)
+
         if err != nil {
             log.Printf("!!!!!! resending a failed message failed again: %+v", *fm)
             // This is the first resend failure in the loop, so all previous messages in failedMessages array
@@ -543,7 +607,9 @@ func (cbs *ChanBridgeSender) Start(c chan ConnState) {
                     break LOOP
                 default:
                     log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
-                    err := cbs.sendMessage(message, c, block, false)
+					receiver, remoteSender := libchan.Pipe()
+					bridgeSender := NewBridgeSender(t.NewSendChannel, receiver, remoteSender)
+                    err := bridgeSender.trySend(cbs, message, c, block, false)
                     if err != nil {
                         MHealth.Set(MFailed)
                         log.Printf("!!!!!! sending  message failed: %+v", message)
