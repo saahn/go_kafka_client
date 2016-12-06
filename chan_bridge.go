@@ -64,7 +64,7 @@ type BridgeResponse struct {
 type BridgeSender interface {
     //Send(Message) error
     Close() error
-	trySend(*ChanBridgeSender, *Message, chan ConnState, chan struct{}, bool) error
+	trySend(spdy.StreamProvider, *ChanBridgeSender, *Message, chan ConnState, chan struct{}, bool) error
 }
 
 type bridgeSender struct {
@@ -147,7 +147,7 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
 	bridgeResponse.Msg = "totally OK"
 	if err != nil {
 		bridgeResponse.Msg = "not OK"
-        log.Printf("Got an error from sender: %v", err)
+        log.Printf("--- Got an error from sender: %v", err)
         //if err.Error() == "EOF" {
         //    log.Print("Ignoring EOF error from sender.")
         //    return nil, nil
@@ -160,8 +160,15 @@ func (br *bridgeReceiver) Listen(receiver libchan.Receiver) (interface{}, error)
     //log.Printf("... sending bridgeResponse to Sender: %+v", bridgeResponse)
     sendErr := bridgeMessage.ResponseChan.Send(bridgeResponse)
     if sendErr != nil {
-        log.Printf("Failed to send response to sender: %v", err)
+        log.Printf("--- Failed to send response to sender: %v", sendErr)
+		return bridgeMessage.Msg, sendErr
     }
+	err = bridgeMessage.ResponseChan.Close()
+	if err != nil {
+		log.Print("--- Failed to close remoteSender on Receiver side.")
+	} else {
+		log.Print("+++ Successfully closed remoteSender on Receiver side.")
+	}
     return bridgeMessage.Msg, err
 }
 
@@ -307,6 +314,7 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
     var client net.Conn
     var err error
     var transport libchan.Transport
+	var p spdy.StreamProvider
     useTLS := os.Getenv("USE_TLS")
     log.Printf("'USE_TLS' env value: %v", useTLS)
 
@@ -346,7 +354,7 @@ func (cbs *ChanBridgeSender) Connect(c chan ConnState) error {
     //bridgeSender := NewBridgeSender(transport.NewSendChannel, receiver, remoteSender)
     //cbs.bridgeSender = bridgeSender
     c <- Connected
-    cbs.Start(transport, c)
+    cbs.Start(p, transport, c)
     return err
 }
 
@@ -433,18 +441,18 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                     break RECEIVELOOP2
                 }
 				chanCount++
-                log.Print("--- Received a new channel")
+                log.Print("=== Received a new channel")
 
                 go func(receiver libchan.Receiver) {
 					defer log.Printf("!!!!! Ending receive goroutine...chanCount is %d", chanCount)
 					var receivedCount = 0
 					RECEIVELOOP3:
                     for {
-						log.Printf("^^^ receivedCount in channel %v: %d", receiver, receivedCount)
+						log.Printf("receivedCount in channel %v: %d", receiver, receivedCount)
                         msg, err := br.Listen(receiver)
 						log.Printf("Receiver got msg and err: %+v, %+v", msg, err)
                         if err != nil {
-                            log.Printf("Error from bridgeReceiver.Listen: %v", err)
+                            log.Printf("--- Error from bridgeReceiver.Listen: %v", err)
                             MMessageReceiveFailureCount.Add(1)
                             break RECEIVELOOP3
                         } else if msg != nil {
@@ -470,19 +478,19 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener, br BridgeReceiver) e
                             break RECEIVELOOP3
                         }
                     }
-					log.Printf("^^^^^ broke out of RECEIVELOOP3 loop! receivedCount in channel %v: %d", receiver, receivedCount)
+					log.Printf("broke out of RECEIVELOOP3 loop! receivedCount in channel %v: %d", receiver, receivedCount)
 				}(receiver)
 				log.Printf("...... chanCount: %d", chanCount)
             }
-			log.Print("^^!!!^^ broke out of RECEIVELOOP2 for loop!")
+			log.Print("broke out of RECEIVELOOP2 for loop!")
         }(t)
     }
-	log.Print("^^--^^ broke out of RECEIVELOOP1 for loop!")
+	log.Print("broke out of RECEIVELOOP1 for loop!")
 	MHealth.Set(MFailed)
     return errors.New("ChanBridgeReceiver failed to start")
 }
 
-func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnState, block chan struct{}, resend bool) (e error) {
+func (bs *bridgeSender) trySend(p spdy.StreamProvider, cbs *ChanBridgeSender, m *Message, c chan ConnState, block chan struct{}, resend bool) (e error) {
 	MMessageSendAttemptCount.Add(1)
 	select {
 	case <-block:
@@ -491,6 +499,7 @@ func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnSt
 		}
 		return errors.New("Sending is blocked")
 	default:
+		log.Print("trySend is not blocked.")
 	}
 
 	sender, err := bs.senderFunc()
@@ -502,9 +511,11 @@ func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnSt
 				cbs.failedMessages = append(cbs.failedMessages, m)
 			}
 			log.Printf("!!!!!!!! Failed to send message: %+v", m)
-			log.Printf("... send failure error: %+v", err)
+			log.Printf("... send failure error: %+v", e)
 			log.Print("Closing block channel")
 			close(block)
+			log.Print("!!!!! closing stream provider !!!!!")
+			p.Close()
 			log.Print("Sending Disconnected signal")
 			c <- Disconnected
 		} else {
@@ -528,6 +539,7 @@ func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnSt
 		log.Printf("------ Receive failed with error %+v in trySend", err)
 		return err
 	}
+	log.Printf("****** got response from receiver: %+v", response)
 	err = sender.Close()
 	if err != nil {
 		log.Print("=== FAILED to close sender.")
@@ -565,7 +577,7 @@ func (bs *bridgeSender) trySend(cbs *ChanBridgeSender, m *Message, c chan ConnSt
 //    return err
 //}
 
-func (cbs *ChanBridgeSender) Start(t libchan.Transport, c chan ConnState) {
+func (cbs *ChanBridgeSender) Start(p spdy.StreamProvider, t libchan.Transport, c chan ConnState) {
     block := make(chan struct{})
     fmCount := len(cbs.failedMessages)
     log.Printf("Number of failed messages to resend: %v", fmCount)
@@ -577,8 +589,7 @@ func (cbs *ChanBridgeSender) Start(t libchan.Transport, c chan ConnState) {
 
 		receiver, remoteSender := libchan.Pipe()
 		bridgeSender := NewBridgeSender(t.NewSendChannel, receiver, remoteSender)
-		err := bridgeSender.trySend(cbs, fm, c, block, false)
-
+		err := bridgeSender.trySend(p, cbs, fm, c, block, true)
         if err != nil {
             log.Printf("!!!!!! resending a failed message failed again: %+v", *fm)
             // This is the first resend failure in the loop, so all previous messages in failedMessages array
@@ -604,18 +615,27 @@ func (cbs *ChanBridgeSender) Start(t libchan.Transport, c chan ConnState) {
                 select {
                 case <-block:
                     cbs.failedMessages = append(cbs.failedMessages, message)
+					log.Print("*** got a message from block channel")
                     break LOOP
                 default:
                     log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
 					receiver, remoteSender := libchan.Pipe()
 					bridgeSender := NewBridgeSender(t.NewSendChannel, receiver, remoteSender)
-                    err := bridgeSender.trySend(cbs, message, c, block, false)
+                    err := bridgeSender.trySend(p, cbs, message, c, block, false)
                     if err != nil {
-                        MHealth.Set(MFailed)
-                        log.Printf("!!!!!! sending  message failed: %+v", message)
+						select {
+						case _, ok := <-block:
+							if ok {
+								close(block)
+								MHealth.Set(MFailed)
+								log.Printf("!!!!!! sending  message failed: %+v", message)
+							}
+						default:
+						}
                     }
                 }
             }
+			log.Print("*** broke out of LOOP")
         }(goChanIndex, block)
     }
     MHealth.Set(MHealthy)
