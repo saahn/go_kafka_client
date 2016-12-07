@@ -172,7 +172,6 @@ func (cb *ChanBridge) Stop() {
         log.Print("Trying to stop ChanBridgeSender...")
         cb.sender.Stop()
     }
-    //cb.connStateChan <-Stopped
 }
 
 func (cbr *ChanBridgeReceiver) Stop() {
@@ -187,14 +186,19 @@ func (cbr *ChanBridgeReceiver) Stop() {
 func (cbs *ChanBridgeSender) Stop() {
     log.Print("Stopping ChanBridgeSender...")
 	// TODO: drain failedMessages array
-	err := cbs.DrainFailed()
+	err := cbs.Drain()
 	if err != nil {
 		log.Print("!!! [cbs.Stop WARN] There are failed messages in the queue that were not resent...")
-		safeClose(cbs.block)
+		if cbs.block != nil {
+			close(cbs.block)
+		}
 	}
-	err = cbs.streamProvider.Close()
-	if err != nil {
-		log.Fatal("Failed to close ChanBridgeSender.streamProvider")
+
+	if cbs.streamProvider != nil {
+		err = cbs.streamProvider.Close()
+		if err != nil {
+			log.Fatal("Failed to close ChanBridgeSender.streamProvider")
+		}
 	}
     log.Print("ChanBridgeSender is stopped")
 	cbs.connState <- Stopped
@@ -208,39 +212,6 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
 		connState:      make(chan ConnState, 1),
 	}
 }
-
-//func (cbs *ChanBridgeSender) Connect() {
-//	MHealth.Set(MWaiting)
-//	cbs.connState <-Disconnected
-//	CONNECT_LOOP:
-//	for {
-//		select {
-//		case cs := <-cbs.connState:
-//			switch {
-//			case cs == Connected:
-//				MStatus.Set("Connected")
-//				log.Print("ChanBridgeSender is connected.")
-//			case cs == Disconnected:
-//				log.Print("ChanBridgeSender is disconnected...restarting.")
-//				MStatus.Set("Disconnected")
-//				err := cbs.tryConnect()
-//				if err != nil {
-//					cbs.connState <- Disconnected
-//				} else {
-//					cbs.connState <- Connected
-//				}
-//			case cs == Stopped:
-//				MStatus.Set("Stopped")
-//				close(cbs.connState)
-//				break CONNECT_LOOP
-//			}
-//		default:
-//			<-time.After(3 * time.Second)
-//		}
-//	}
-//	MHealth.Set(MFailed)
-//	log.Print("Exited tryConnect loop.")
-//}
 
 type bridgeEndpoint interface {
 	Connect() error
@@ -337,7 +308,7 @@ func safeClose(c chan struct{}) {
 
 func (cbs *ChanBridgeSender) Start() error {
 	cbs.block = make(chan struct{})
-	err := cbs.DrainFailed()
+	err := cbs.Drain()
 	if err != nil {
 		// force connection break
 		MHealth.Set(MFailed)
@@ -385,7 +356,7 @@ func (cbs *ChanBridgeSender) Start() error {
 }
 
 // Sends messages in the failedMessages list
-func (cbs *ChanBridgeSender) DrainFailed() error {
+func (cbs *ChanBridgeSender) Drain() error {
 	fmCount := len(cbs.failedMessages)
 	if fmCount > 0 {
 		log.Printf("Number of failed messages to resend: %v", fmCount)
