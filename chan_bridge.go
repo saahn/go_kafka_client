@@ -187,11 +187,12 @@ func (cbr *ChanBridgeReceiver) Stop() {
 func (cbs *ChanBridgeSender) Stop() {
     log.Print("Stopping ChanBridgeSender...")
 	// TODO: drain failedMessages array
-	cbs.DrainFailed()
-	if len(cbs.failedMessages) > 0 {
+	err := cbs.DrainFailed()
+	if err != nil {
 		log.Print("!!! [cbs.Stop WARN] There are failed messages in the queue that were not resent...")
+		safeClose(cbs.block)
 	}
-	err := cbs.streamProvider.Close()
+	err = cbs.streamProvider.Close()
 	if err != nil {
 		log.Fatal("Failed to close ChanBridgeSender.streamProvider")
 	}
@@ -204,7 +205,6 @@ func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBrid
         goChannels:     goChannels,
         remoteUrl:      remoteUrl,
         failedMessages: make([]*Message, 0),
-        block:     		make(chan struct{}),
 		connState:      make(chan ConnState, 1),
 	}
 }
@@ -323,12 +323,26 @@ func (cbs *ChanBridgeSender) Connect() error {
     return err
 }
 
+func safeClose(c chan struct{}) {
+	select {
+	case x, ok := <-c:
+		log.Printf("read value before closing channel: %+v", x)
+		if ok {
+			log.Print("safely closing channel")
+			close(c)
+		}
+	default:
+	}
+}
+
 func (cbs *ChanBridgeSender) Start() error {
+	cbs.block = make(chan struct{})
 	err := cbs.DrainFailed()
 	if err != nil {
 		// force connection break
 		MHealth.Set(MFailed)
 		close(cbs.block)
+		//safeClose(cbs.block)
 		return errors.New("Sender failed to start")
 	}
 
@@ -373,25 +387,29 @@ func (cbs *ChanBridgeSender) Start() error {
 // Sends messages in the failedMessages list
 func (cbs *ChanBridgeSender) DrainFailed() error {
 	fmCount := len(cbs.failedMessages)
-	log.Printf("Number of failed messages to resend: %v", fmCount)
-	for i := 0; i < fmCount; i++ {
-	    log.Printf("cbs.failedMessages, len, cap: %v, %v, %v",
-	        cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
-	    fm := cbs.failedMessages[i]
-	    log.Printf("~~~~~~ resending a failed message: %+v", *fm)
-		err := cbs.TrySend(fm, true)
-	    if err != nil {
-	        log.Printf("!!!!!! resending a failed message failed again. msg: %+v", *fm)
-	        // This is the first resend failure in the loop, so all previous messages in failedMessages array
-	        // successfully resent the message. Remove those, but keep the rest in failedMessages array.
-	        cbs.failedMessages = append(make([]*Message, fmCount-i), cbs.failedMessages[i:]...)
-	        return err
-	    }
+	if fmCount > 0 {
+		log.Printf("Number of failed messages to resend: %v", fmCount)
+		for i := 0; i < fmCount; i++ {
+			log.Printf("cbs.failedMessages, len, cap: %v, %v, %v",
+				cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
+			fm := cbs.failedMessages[i]
+			log.Printf("~~~~~~ resending a failed message: %+v", *fm)
+			err := cbs.TrySend(fm, true)
+			if err != nil {
+				log.Printf("!!!!!! resending a failed message failed again. error: %+v, msg: %+v", err, *fm)
+				// This is the first resend failure in the loop, so all previous messages in failedMessages array
+				// successfully resent the message. Remove those, but keep the rest in failedMessages array.
+				cbs.failedMessages = append(make([]*Message, fmCount-i, fmCount-i), cbs.failedMessages[i:]...)
+				return err
+			}
+		}
+		log.Printf("Done resending failed messages! cbs.failedMessages, len, cap: %v, %v, %v",
+			cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
+	} else {
+		log.Print("There are no failed messages to drain.")
 	}
 	// Successfully resent all failed messages. Reset failedMessages slice.
 	cbs.failedMessages = nil
-	log.Printf("Done resending failed messages! cbs.failedMessages, len, cap: %v, %v, %v",
-	    cbs.failedMessages, len(cbs.failedMessages), cap(cbs.failedMessages))
 	return nil
 }
 
@@ -413,6 +431,7 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 	select {
 	case <-cbs.block:
 		if !resend {
+			log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
 			cbs.failedMessages = append(cbs.failedMessages, m)
 		}
 		return errors.New("Sending is blocked")
@@ -422,7 +441,7 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 
 	sender, err := bs.senderFunc()
 	defer func() {
-		log.Print("=== In deferred function")
+		log.Print("=== [TrySend defer] Entered deferred function")
 		if e != nil {
 			MMessageSendFailureCount.Add(1)
 			if !resend {
@@ -437,7 +456,7 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 			log.Print("Sending Disconnected signal")
 			cbs.connState <- Disconnected
 		} else {
-			log.Print(":) message send succeeded")
+			log.Print("=== [TrySend defer] message send succeeded :)")
 			MMessageSendSuccessCount.Add(1)
 		}
 	}()
