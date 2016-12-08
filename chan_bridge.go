@@ -82,7 +82,6 @@ Wraps a ChanBridgeSender and ChanBridgeReceiver with their local Kafka Message G
 type ChanBridge struct {
     sender          *ChanBridgeSender
     receiver        *ChanBridgeReceiver
-    //connStateChan   chan ConnState
 }
 
 func NewChanBridge(sender *ChanBridgeSender, receiver *ChanBridgeReceiver) *ChanBridge {
@@ -324,7 +323,7 @@ func (cbs *ChanBridgeSender) Start() error {
 	for goChanIndex, msgChan := range cbs.goChannels {
 		log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
 		go func(goChanIndex int) {
-			defer log.Printf("*************** Ending send goroutine for goChanIndex [%v]...", goChanIndex)
+			defer log.Printf("******* Ending send goroutine for goChanIndex [%v]...", goChanIndex)
 
 			//log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
 			MSGLOOP:
@@ -340,15 +339,6 @@ func (cbs *ChanBridgeSender) Start() error {
 					if err != nil {
 						log.Print("!!! Failed to send message!")
 						break MSGLOOP
-						//select {
-						//case _, ok := <-cbs.block:
-						//	if ok {
-						//		close(cbs.block)
-						//		MHealth.Set(MFailed)
-						//		log.Printf("!!!!!! sending  message failed: %+v", message)
-						//	}
-						//default:
-						//}
 					}
 				}
 			}
@@ -389,15 +379,19 @@ func (cbs *ChanBridgeSender) Drain() error {
 }
 
 
-// 1. Creates 2 sender/receiver pairs for sending a message and receiving an ack.
+// 1. Creates 2 sender/receiver pairs for sending a message (to the remote receiver) and receiving an ack
+//    (from the remote sender).
 // 		a. the sender is created as a new send channel from cbs.transport that was initialized when a
 //		   connection was established with the remote server.
 //		b. a new remoteSender/receiver pair is created via libchan.Pipe()
 // 2. The sender sends a msg as well as the remoteSender to the remote server.
-// 3. The server unpacks the remoteSender via which it sends an ack message; client receives via its receiver created
-//    in step 1b.
-// 4. The client closes the sender, which closes message channel.
-// 5. The client closes the remoteSender, which closes the ack channel.
+// 3. The server receives the message, unpacks the remoteSender embeeded in the message, and sends an ack message, then
+//    closes the remoteSender, which closes the ack channel.
+//      -  Note: Closing the remoteSender from the sender's side, after it receives the ack (to prevent premature
+//               closing of the ack channel) did not work; the ack channel remains open until the tcp connection
+//               is torn down. Closing it from the remote server immediately after sending the ack does not seem
+//               to create any timing issues.
+// 4. The client closes the sender, which closes message channel, after receiving an ack from the remote server.
 func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 	defer func() {
 		log.Print("=== [TrySend defer] Entered deferred function")
@@ -460,13 +454,6 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 	} else {
 		log.Print("=== [TrySend INFO] Closed sender.")
 	}
-
-	//err = remoteSender.Close()
-	//if err != nil {
-	//	log.Print("=== [TrySend ERROR] FAILED to close remoteSender.")
-	//} else {
-	//	log.Print("=== [TrySend INFO] Closed remoteSender.")
-	//}
 	return err
 }
 
@@ -544,13 +531,10 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener) error {
 						} else {
 							receivedCount++
 							MMessageReceiveSuccessCount.Add(1)
-							//log.Printf("the msg to send over goChannel: %+v", m)
 							h := TopicPartitionHash(&msg)
 							goChanLen := len(cbr.goChannels)
-							//i := TopicPartitionHash(&m)%len(cbr.goChannels)
 							i := h % goChanLen
 							log.Printf(">>> h, goChanLen, i: %d, %d, %d", h, goChanLen, i)
-							//cbr.goChannels[i] <- &m
 							select {
 							case cbr.goChannels[i] <- &msg:
 								log.Printf(">>> [cbr.Start INFO] sent msg to receiver's goChannels[%v]", i)
@@ -577,20 +561,18 @@ func (cbr *ChanBridgeReceiver) Receive(receiver libchan.Receiver) (msg Message, 
 	bridgeResponse := &BridgeResponse{}
 	receiveErr = receiver.Receive(bridgeMessage)
 	log.Printf("... [cbr.Receive DEBUG] Received a BridgeMessage: %+v", bridgeMessage)
-	//log.Printf("_ _ _ the received msg string: %+v", string(bridgeMessage.Msg.Value))
 	msg = bridgeMessage.Msg
 	bridgeResponse.Err = receiveErr
-	bridgeResponse.Msg = "totally OK"
+	bridgeResponse.Msg = "OK"
 	if receiveErr != nil {
-		bridgeResponse.Msg = "not OK"
+		errStr := receiveErr.Error()
+		bridgeResponse.Msg = "Receive error: " + errStr
 		log.Printf("!!! [cbr.Receive ERROR] Failed to receive a message from remote sender. Error: %v", receiveErr)
-		if receiveErr.Error() == "EOF" {
+		if errStr == "EOF" {
 			log.Print("[cbr.Receive INFO] *** Got EOF error from sender.")
-			bridgeResponse.Msg = "*************************** not OK? got EOF"
 		}
-		if receiveErr.Error() == "stream does not exist" || bridgeMessage.ResponseChan == nil {
+		if errStr == "stream does not exist" || bridgeMessage.ResponseChan == nil {
 			log.Print("[cbr.Receive ERROR] sender's stream is gone")
-			bridgeResponse.Msg = "*************************** not OK? sender stream is gone"
 		}
 		return msg, receiveErr, nil
 	} else {
