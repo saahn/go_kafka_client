@@ -190,11 +190,9 @@ func (cbs *ChanBridgeSender) Stop() {
 			close(cbs.block)
 		}
 	}
-	if cbs.streamProvider != nil {
-		err = cbs.streamProvider.Close()
-		if err != nil {
-			log.Fatal("Failed to close ChanBridgeSender.streamProvider")
-		}
+	err = cbs.Disconnect()
+	if err != nil {
+		log.Fatal("Failed to disconnect ChanBridgeSender")
 	}
     log.Print("ChanBridgeSender is stopped")
 	cbs.connState <- Stopped
@@ -252,6 +250,7 @@ func (cbs *ChanBridgeSender) Connect() error {
     var clientConn net.Conn
     var err error
     var transport libchan.Transport
+
     useTLS := os.Getenv("USE_TLS")
     log.Printf("'USE_TLS' env value: %v", useTLS)
 
@@ -313,7 +312,6 @@ func (cbs *ChanBridgeSender) Start() error {
 	cbs.block = make(chan struct{})
 	err := cbs.Drain()
 	if err != nil {
-		// force connection break
 		MHealth.Set(MFailed)
 		close(cbs.block)
 		return errors.New("Sender failed to start")
@@ -345,8 +343,24 @@ func (cbs *ChanBridgeSender) Start() error {
 			log.Print("*** broke out of MSGLOOP")
 		}(goChanIndex)
 	}
-	MHealth.Set(MHealthy)
-	return nil
+	if err == nil {
+		MHealth.Set(MHealthy)
+	}
+	return err
+}
+
+func (cbs *ChanBridgeSender) Disconnect() error {
+	var err error
+	log.Print("Trying to disconnect ChanBridgeSender.streamProvider...")
+	if cbs.streamProvider != nil {
+		err = cbs.streamProvider.Close()
+		if err != nil && err.Error() != "EOF" {
+			log.Printf("Failed to close ChanBridgeSender.streamProvider. Error: %+v", err)
+		}
+	} else {
+		log.Print("ChanBridgeSender streamProvider is nil.")
+	}
+	return err
 }
 
 // Sends messages in the failedMessages list
@@ -405,8 +419,8 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 			log.Printf("... [TrySend INFO] send failure error: %+v", e)
 			log.Print("Closing block channel")
 			safeClose(cbs.block)
-			//log.Print("[TrySend INFO] Forcing client to disconnect.")
-			//cbs.streamProvider.Close()
+			log.Print("[TrySend INFO] Forcing client to disconnect.")
+			cbs.Disconnect()
 			log.Print("Sending Disconnected signal")
 			cbs.connState <- Disconnected
 		} else {
@@ -417,10 +431,6 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 
 	select {
 	case <-cbs.block:
-		//if !resend {
-		//	log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
-		//	cbs.failedMessages = append(cbs.failedMessages, m)
-		//}
 		log.Print("************ Got signal from cbs.block.")
 		return errors.New("Sending is blocked")
 	default:
