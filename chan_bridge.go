@@ -117,7 +117,6 @@ type ChanBridgeReceiver struct {
     goChannels      []chan *Message
     listenUrl       string
 	connState 		chan ConnState
-    //failedSends     chan *Message
 }
 
 func dialTcp(addr string, useTLS string) (net.Conn, error) {
@@ -185,7 +184,6 @@ func (cbr *ChanBridgeReceiver) Stop() {
 
 func (cbs *ChanBridgeSender) Stop() {
     log.Print("Stopping ChanBridgeSender...")
-	// TODO: drain failedMessages array
 	err := cbs.Drain()
 	if err != nil {
 		log.Print("!!! [cbs.Stop WARN] There are failed messages in the queue that were not resent...")
@@ -193,7 +191,6 @@ func (cbs *ChanBridgeSender) Stop() {
 			close(cbs.block)
 		}
 	}
-
 	if cbs.streamProvider != nil {
 		err = cbs.streamProvider.Close()
 		if err != nil {
@@ -202,15 +199,6 @@ func (cbs *ChanBridgeSender) Stop() {
 	}
     log.Print("ChanBridgeSender is stopped")
 	cbs.connState <- Stopped
-}
-
-func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBridgeSender {
-    return &ChanBridgeSender{
-        goChannels:     goChannels,
-        remoteUrl:      remoteUrl,
-        failedMessages: make([]*Message, 0),
-		connState:      make(chan ConnState, 1),
-	}
 }
 
 type bridgeEndpoint interface {
@@ -224,10 +212,12 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
 	for {
 		select {
 		case cs := <-c:
+			log.Printf("--- [tryConnect INFO] Read a connstate: %v", cs)
 			switch {
 			case cs == Connected:
 				MStatus.Set("Connected")
-				log.Printf("%v is connected.", be)
+				log.Printf("///////////////// Connected: %v /////////////////", be)
+				break
 			case cs == Disconnected:
 				log.Printf("%v is disconnected...restarting.", be)
 				MStatus.Set("Disconnected")
@@ -235,7 +225,9 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
 				if err != nil {
 					c <- Disconnected
 				}
+				break
 			case cs == Stopped:
+				log.Printf("\\\\\\\\\\\\ Stopped: %v \\\\\\\\\\\\", be)
 				MStatus.Set("Stopped")
 				close(c)
 				break CONNECT_LOOP
@@ -246,6 +238,15 @@ func tryConnect(be bridgeEndpoint, c chan ConnState) {
 	}
 	MHealth.Set(MFailed)
 	log.Print("Exited tryConnect loop.")
+}
+
+func NewChanBridgeSender(goChannels []chan *Message, remoteUrl string) *ChanBridgeSender {
+	return &ChanBridgeSender{
+		goChannels:     goChannels,
+		remoteUrl:      remoteUrl,
+		failedMessages: make([]*Message, 0),
+		connState:      make(chan ConnState, 1),
+	}
 }
 
 func (cbs *ChanBridgeSender) Connect() error {
@@ -281,25 +282,28 @@ func (cbs *ChanBridgeSender) Connect() error {
         }
         p, err := spdy.NewSpdyStreamProvider(clientConn, false)
         if err == nil {
-            transport = spdy.NewTransport(p)
+			log.Printf("Created a new spdyStreamProvider: %v", p)
+			transport = spdy.NewTransport(p)
 			cbs.streamProvider = p
 			cbs.transport = transport
             break
         } else {
+			log.Printf("Got error while trying to create a new spdyStreamProvider: %v", err)
 			clientConn.Close()  // close before trying to connect again
         }
     }
-    //cbs.connState <- Connected
+	log.Print("Broke out of cbs Connect loop!")
+	cbs.connState <-Connected
     err = cbs.Start()
-    return err
+	return err
 }
 
 func safeClose(c chan struct{}) {
 	select {
 	case x, ok := <-c:
-		log.Printf("read value before closing channel: %+v", x)
+		log.Printf("=== [safeCLose INFO] read value before closing channel: %+v", x)
 		if ok {
-			log.Print("safely closing channel")
+			log.Print("... [safeCLose INFO] safely closing channel")
 			close(c)
 		}
 	default:
@@ -313,7 +317,6 @@ func (cbs *ChanBridgeSender) Start() error {
 		// force connection break
 		MHealth.Set(MFailed)
 		close(cbs.block)
-		//safeClose(cbs.block)
 		return errors.New("Sender failed to start")
 	}
 
@@ -321,34 +324,35 @@ func (cbs *ChanBridgeSender) Start() error {
 	for goChanIndex, msgChan := range cbs.goChannels {
 		log.Printf("In cbs.connections loop. goChanIndex: %v", goChanIndex)
 		go func(goChanIndex int) {
-			defer log.Printf("Ending send goroutine for goChanIndex [%v]...", goChanIndex)
+			defer log.Printf("*************** Ending send goroutine for goChanIndex [%v]...", goChanIndex)
 
 			//log.Printf("... in new goroutine for sender's gochannel index [%v]", goChanIndex)
-			LOOP:
+			MSGLOOP:
 			for message := range msgChan {
 				select {
 				case <-cbs.block:
 				    cbs.failedMessages = append(cbs.failedMessages, message)
 					log.Print("*** got a signal from block channel")
-				    break LOOP
+				    break MSGLOOP
 				default:
 					log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
 					err := cbs.TrySend(message, false)
 					if err != nil {
 						log.Print("!!! Failed to send message!")
-						select {
-						case _, ok := <-cbs.block:
-							if ok {
-								close(cbs.block)
-								MHealth.Set(MFailed)
-								log.Printf("!!!!!! sending  message failed: %+v", message)
-							}
-						default:
-						}
+						break MSGLOOP
+						//select {
+						//case _, ok := <-cbs.block:
+						//	if ok {
+						//		close(cbs.block)
+						//		MHealth.Set(MFailed)
+						//		log.Printf("!!!!!! sending  message failed: %+v", message)
+						//	}
+						//default:
+						//}
 					}
 				}
 			}
-			log.Print("*** broke out of LOOP")
+			log.Print("*** broke out of MSGLOOP")
 		}(goChanIndex)
 	}
 	MHealth.Set(MHealthy)
@@ -395,33 +399,18 @@ func (cbs *ChanBridgeSender) Drain() error {
 // 4. The client closes the sender, which closes message channel.
 // 5. The client closes the remoteSender, which closes the ack channel.
 func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
-	receiver, remoteSender := libchan.Pipe()
-	bs := NewBridgeSender(cbs.transport.NewSendChannel, receiver, remoteSender)
-	MMessageSendAttemptCount.Add(1)
-
-	select {
-	case <-cbs.block:
-		if !resend {
-			log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
-			cbs.failedMessages = append(cbs.failedMessages, m)
-		}
-		return errors.New("Sending is blocked")
-	default:
-		log.Print("trySend is not blocked.")
-	}
-
-	sender, err := bs.senderFunc()
 	defer func() {
 		log.Print("=== [TrySend defer] Entered deferred function")
 		if e != nil {
 			MMessageSendFailureCount.Add(1)
 			if !resend {
+				log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
 				cbs.failedMessages = append(cbs.failedMessages, m)
 			}
-			log.Printf("!!! [TrySend ERROR] Failed to send message: %+v", m)
+			log.Printf("!!!!!!!!!!!!!!! [TrySend ERROR] Failed to send message: %+v", m)
 			log.Printf("... [TrySend INFO] send failure error: %+v", e)
 			log.Print("Closing block channel")
-			close(cbs.block)
+			safeClose(cbs.block)
 			//log.Print("[TrySend INFO] Forcing client to disconnect.")
 			//cbs.streamProvider.Close()
 			log.Print("Sending Disconnected signal")
@@ -431,6 +420,23 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 			MMessageSendSuccessCount.Add(1)
 		}
 	}()
+
+	select {
+	case <-cbs.block:
+		//if !resend {
+		//	log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
+		//	cbs.failedMessages = append(cbs.failedMessages, m)
+		//}
+		log.Print("************ Got signal from cbs.block.")
+		return errors.New("Sending is blocked")
+	default:
+		log.Print("no signal from cbs.block.")
+	}
+
+	receiver, remoteSender := libchan.Pipe()
+	bs := NewBridgeSender(cbs.transport.NewSendChannel, receiver, remoteSender)
+	MMessageSendAttemptCount.Add(1)
+	sender, err := bs.senderFunc()
 	if err != nil {
 		return err
 	}
@@ -454,12 +460,13 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 	} else {
 		log.Print("=== [TrySend INFO] Closed sender.")
 	}
-	err = remoteSender.Close()
-	if err != nil {
-		log.Print("=== [TrySend ERROR] FAILED to close remoteSender.")
-	} else {
-		log.Print("=== [TrySend INFO] Closed remoteSender.")
-	}
+
+	//err = remoteSender.Close()
+	//if err != nil {
+	//	log.Print("=== [TrySend ERROR] FAILED to close remoteSender.")
+	//} else {
+	//	log.Print("=== [TrySend INFO] Closed remoteSender.")
+	//}
 	return err
 }
 
@@ -469,7 +476,6 @@ func NewChanBridgeReceiver(goChannels []chan *Message, listenUrl string) *ChanBr
         goChannels: goChannels,
         listenUrl:  listenUrl,
 		connState:  make(chan ConnState, 1),
-		//failedSends: make(chan *Message, 1),
     }
 }
 
@@ -580,20 +586,22 @@ func (cbr *ChanBridgeReceiver) Receive(receiver libchan.Receiver) (msg Message, 
 		log.Printf("!!! [cbr.Receive ERROR] Failed to receive a message from remote sender. Error: %v", receiveErr)
 		if receiveErr.Error() == "EOF" {
 			log.Print("[cbr.Receive INFO] *** Got EOF error from sender.")
-			bridgeResponse.Msg = "not OK? got EOF"
+			bridgeResponse.Msg = "*************************** not OK? got EOF"
 		}
 		if receiveErr.Error() == "stream does not exist" || bridgeMessage.ResponseChan == nil {
 			log.Print("[cbr.Receive ERROR] sender's stream is gone")
-			bridgeResponse.Msg = "not OK? sender stream is gone"
+			bridgeResponse.Msg = "*************************** not OK? sender stream is gone"
 		}
 		return msg, receiveErr, nil
 	} else {
 		ackErr = bridgeMessage.ResponseChan.Send(bridgeResponse)
 		if ackErr != nil {
-			log.Printf("!!! [cbr.SendAck ERROR] Failed to send ack from receiver. Error: %v", ackErr)
+			log.Printf("!!! [cbr.Receive ERROR] Failed to send ack from receiver. Error: %v", ackErr)
 		} else {
-			log.Printf("... [cbr.SendAck INFO] Sent ack from receiver: %v", bridgeResponse)
+			log.Printf("... [cbr.Receive INFO] Sent ack from receiver: %v", bridgeResponse)
 		}
+		log.Printf("*************** [cbr.Receive INFO] Closing the receiver's ResponseChan: %+v", bridgeMessage.ResponseChan)
+		bridgeMessage.ResponseChan.Close()
 	}
 	log.Printf("... [cbr.Receive INFO] Received message: %+v", bridgeMessage.Msg)
 	return msg, receiveErr, ackErr
