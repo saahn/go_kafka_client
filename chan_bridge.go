@@ -333,10 +333,9 @@ func (cbs *ChanBridgeSender) Start() error {
 					log.Print("*** got a signal from block channel")
 				    break MSGLOOP
 				default:
-					log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
+					//log.Printf("... read a message from sender's gochannel index [%v]: %+v", goChanIndex, message)
 					err := cbs.TrySend(message, false)
 					if err != nil {
-						log.Print("!!! Failed to send message!")
 						break MSGLOOP
 					}
 				}
@@ -420,20 +419,19 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 		log.Print("=== [TrySend defer] Entered deferred function")
 		if e != nil {
 			MMessageSendFailureCount.Add(1)
+			log.Printf("!!!!!!!!!!!!!!! [TrySend ERROR] Failed to send message: %+v", m)
 			if !resend {
-				log.Printf("Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
+				log.Printf("... [TrySend INFO] Failed to send a msg for the first time. Saving it to the failedMessages queue: %+v", m)
 				cbs.failedMessages = append(cbs.failedMessages, m)
 			}
-			log.Printf("!!!!!!!!!!!!!!! [TrySend ERROR] Failed to send message: %+v", m)
 			log.Printf("... [TrySend INFO] send failure error: %+v", e)
-			log.Print("Closing block channel")
+			log.Print("[TrySend INFO] Closing block channel")
 			safeClose(cbs.block)
 			log.Print("[TrySend INFO] Forcing client to disconnect.")
 			cbs.Disconnect()
-			log.Print("Sending Disconnected signal")
+			log.Print("[TrySend INFO] Sending Disconnected signal")
 			cbs.connState <- Disconnected
 		} else {
-			log.Print("=== [TrySend defer] message send succeeded :)")
 			MMessageSendSuccessCount.Add(1)
 		}
 	}()
@@ -443,7 +441,7 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 		log.Print("************ Got signal from cbs.block.")
 		return errors.New("Sending is blocked")
 	default:
-		log.Print("no signal from cbs.block.")
+		//log.Print("no signal from cbs.block.")
 	}
 
 	receiver, remoteSender := libchan.Pipe()
@@ -466,12 +464,10 @@ func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 		log.Printf("!!! [TrySend ERROR] Receive failed with error %+v", err)
 		return err
 	}
-	log.Printf("[TrySend DEBUG] got response from receiver: %+v", response)
+	//log.Printf("[TrySend DEBUG] got response from receiver: %+v", response)
 	err = sender.Close()
 	if err != nil {
 		log.Print("=== [TrySend ERROR] FAILED to close sender.")
-	} else {
-		log.Print("=== [TrySend INFO] Closed sender.")
 	}
 	sender = nil
 	bs = nil
@@ -537,8 +533,8 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener) error {
 				}
 				chanCount++
 				go func(receiver libchan.Receiver) {
-					log.Print("[cbr.Start INFO] === Created a new channel with remote sender")
-					defer log.Printf("[cbr.Start INFO] === Ending receive goroutine...chanCount is %d", chanCount)
+					//log.Print("[cbr.Start INFO] === Created a new channel with remote sender")
+					//defer log.Printf("[cbr.Start INFO] === Ending receive goroutine...chanCount is %d", chanCount)
 					RECEIVELOOP3:
 					for {
 						msg, receiveError, ackError := cbr.Receive(receiver)
@@ -552,7 +548,7 @@ func (cbr *ChanBridgeReceiver) Start(listener net.Listener) error {
 							h := TopicPartitionHash(&msg)
 							goChanLen := len(cbr.goChannels)
 							i := h % goChanLen
-							log.Printf(">>> h, goChanLen, i: %d, %d, %d", h, goChanLen, i)
+							//log.Printf(">>> h, goChanLen, i: %d, %d, %d", h, goChanLen, i)
 							select {
 							case cbr.goChannels[i] <- &msg:
 								//log.Printf(">>> [cbr.Start INFO] sent msg to receiver's goChannels[%v]", i)
@@ -603,7 +599,7 @@ func (cbr *ChanBridgeReceiver) Receive(receiver libchan.Receiver) (msg Message, 
 		//log.Printf("*************** [cbr.Receive INFO] Closing the receiver's ResponseChan: %+v", bridgeMessage.ResponseChan)
 		bridgeMessage.ResponseChan.Close()
 	}
-	log.Printf("... [cbr.Receive INFO] Received message: %+v", bridgeMessage.Msg)
+	//log.Printf("... [cbr.Receive INFO] Received message: %+v", bridgeMessage.Msg)
 	return msg, receiveErr, ackErr
 }
 
