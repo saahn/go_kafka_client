@@ -4,7 +4,7 @@
 # The ASF licenses this file to You under the Apache License, Version 2.0
 # (the "License"); you may not use this file except in compliance with
 # the License.  You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -19,6 +19,12 @@
 echo 'Starting Zookeeper'
 $ZK_HOME/bin/zkServer.sh start
 
+zk_processes="$(ps -ef | grep zookeeper | wc -l)"
+echo "Zookeeper processes: $zk_processes"
+sleep 5
+zk_processes="$(ps -ef | grep zookeeper | wc -l)"
+echo "Zookeeper processes: $zk_processes"
+
 #Start Kafka
 sed -r -i "s/(zookeeper.connect)=(.*)/\1=$ZK_PORT_2181_TCP_ADDR/g" $KAFKA_PATH/config/server.properties
 sed -r -i "s/(broker.id)=(.*)/\1=$BROKER_ID/g" $KAFKA_PATH/config/server.properties
@@ -28,6 +34,12 @@ sed -r -i "s/^(log4j.rootLogger)=(.*)( stdout)/\1=WARN\3/g" $KAFKA_PATH/config/l
 
 echo 'Starting Kafka'
 $KAFKA_PATH/bin/kafka-server-start.sh $KAFKA_PATH/config/server.properties &
+kafka_processes="$(ps -ef | grep kafka | wc -l)"
+echo "Kafka processes: $kafka_processes"
+# Ensure Kafka has started
+sleep 5
+kafka_processes="$(ps -ef | grep kafka | wc -l)"
+echo "Kafka processes: $kafka_processes"
 
 echo 'Starting Schema Registry'
 $REGISTRY_HOME/bin/schema-registry-start $REGISTRY_HOME/etc/schema-registry/schema-registry.properties &
@@ -36,11 +48,13 @@ mkdir -p $GOPATH/src/github.com/elodina/go_kafka_client
 cp -r /go_kafka_client $GOPATH/src/github.com/elodina
 cd $GOPATH/src/github.com/elodina/go_kafka_client
 
+echo "Installing gpm"
+wget https://raw.githubusercontent.com/pote/gpm/v1.4.0/bin/gpm && chmod +x gpm && sudo mv gpm /usr/local/bin
 echo 'Updating dependencies'
 gpm install
 
 echo 'Running tests'
-go test -v
+go test -run TestMirrorMaker -v
 
 echo 'Stopping Kafka'
 $KAFKA_PATH/bin/kafka-server-stop.sh

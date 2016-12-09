@@ -16,11 +16,16 @@ limitations under the License. */
 package go_kafka_client
 
 import (
+	"log"
 	"fmt"
 	"github.com/elodina/siesta"
 	"github.com/elodina/siesta-producer"
 	"hash/fnv"
+	"expvar"
 )
+
+// Vars exposed to health endpoint
+var	MMessageProducedCount = expvar.NewInt("message_produced_count")
 
 // MirrorMakerConfig defines configuration options for MirrorMaker
 type MirrorMakerConfig struct {
@@ -65,6 +70,12 @@ type MirrorMakerConfig struct {
 
 	// Message values decoder for consumer
 	ValueDecoder Decoder
+
+	// Remote Mirror Maker to connect to, if mirroring over the network
+	RemoteUrl string
+
+	// Bind address to listen on, if mirroring over the network
+	ListenUrl string
 }
 
 // Creates an empty MirrorMakerConfig.
@@ -86,6 +97,7 @@ type MirrorMaker struct {
 	producers       []producer.Producer
 	messageChannels []chan *Message
 	stopped         chan struct{}
+	chanBridge		*ChanBridge	 // for over-the-top replication only
 }
 
 // Creates a new MirrorMaker using given MirrorMakerConfig.
@@ -99,13 +111,65 @@ func NewMirrorMaker(config *MirrorMakerConfig) *MirrorMaker {
 // Starts the MirrorMaker. This method is blocking and should probably be run in a separate goroutine.
 func (this *MirrorMaker) Start() {
 	this.initializeMessageChannels()
-	this.startConsumers()
-	this.startProducers()
+	if this.isBridge() {
+		this.initializeBridge()
+		go this.chanBridge.Start()
+		log.Print("Initialized and started bridge!")
+	} else {
+		this.startConsumers()
+		this.startProducers()
+		MHealth.Set(MHealthy)
+		MStatus.Set("Started local consumers and producers.")
+	}
 	<-this.stopped
+}
+
+func (this *MirrorMaker) isBridge() bool {
+	if this.config.RemoteUrl != "" || this.config.ListenUrl != "" {
+		return true
+	}
+	return false
+}
+
+func (this *MirrorMaker) initializeBridge() {
+	if this.config.RemoteUrl != "" {
+		this.startConsumers()
+		cbs := NewChanBridgeSender(this.messageChannels, this.config.RemoteUrl)
+		this.chanBridge = NewChanBridge(cbs, nil) //&ChanBridge{sender: cbs}
+	} else if this.config.ListenUrl != "" {
+		this.startProducers()
+		cbr := NewChanBridgeReceiver(this.messageChannels, this.config.ListenUrl)
+		this.chanBridge = NewChanBridge(nil, cbr) //&ChanBridge{receiver: cbr}
+	} else {
+		panic("Tried to initializeBridge without either a remoteUrl or listenUrl specified.")
+	}
 }
 
 // Gracefully stops the MirrorMaker.
 func (this *MirrorMaker) Stop() {
+	if len(this.config.ConsumerConfigs) > 0 {
+		this.stopConsumers()
+	}
+
+	if this.config.ProducerConfig != "" {
+		this.stopProducers()
+	}
+
+	this.chanBridge.Stop()
+
+	Info("", "Sending stopped")
+	this.stopped <- struct{}{}
+	Info("", "Sent stopped")
+}
+
+func (this *MirrorMaker) stopProducers() {
+	//TODO maybe drain message channel first?
+	for _, producer := range this.producers {
+		producer.Close()
+	}
+}
+
+func (this *MirrorMaker) stopConsumers() {
 	consumerCloseChannels := make([]<-chan bool, 0)
 	for _, consumer := range this.consumers {
 		consumerCloseChannels = append(consumerCloseChannels, consumer.Close())
@@ -118,15 +182,6 @@ func (this *MirrorMaker) Stop() {
 	for _, ch := range this.messageChannels {
 		close(ch)
 	}
-
-	//TODO maybe drain message channel first?
-	for _, producer := range this.producers {
-		producer.Close()
-	}
-
-	Info("", "Sending stopped")
-	this.stopped <- struct{}{}
-	Info("", "Sent stopped")
 }
 
 func (this *MirrorMaker) startConsumers() {
@@ -154,7 +209,7 @@ func (this *MirrorMaker) startConsumers() {
 			numProducers := this.config.NumProducers
 			config.NumWorkers = 1 // NumWorkers must be 1 to guarantee order
 			config.Strategy = func(_ *Worker, msg *Message, id TaskId) WorkerResult {
-				this.messageChannels[topicPartitionHash(msg)%numProducers] <- msg
+				this.messageChannels[TopicPartitionHash(msg)%numProducers] <- msg
 
 				return NewSuccessfulResult(id)
 			}
@@ -186,6 +241,7 @@ func (this *MirrorMaker) initializeMessageChannels() {
 	} else {
 		this.messageChannels = append(this.messageChannels, make(chan *Message, this.config.ChannelSize))
 	}
+	log.Printf("messageChannels after initializeMessageChannels: %+v", this.messageChannels)
 }
 
 func (this *MirrorMaker) startProducers() {
@@ -205,7 +261,9 @@ func (this *MirrorMaker) startProducers() {
 		}
 
 		producer := producer.NewKafkaProducer(conf, this.config.KeyEncoder, this.config.ValueEncoder, connector)
+		log.Printf("created new producer: %+v", producer)
 		this.producers = append(this.producers, producer)
+		log.Printf("added new producer to this mirrormaker: %+v", this.producers)
 		if this.config.PreserveOrder {
 			go this.produceRoutine(producer, i)
 		} else {
@@ -216,16 +274,22 @@ func (this *MirrorMaker) startProducers() {
 
 func (this *MirrorMaker) produceRoutine(p producer.Producer, channelIndex int) {
 	for msg := range this.messageChannels[channelIndex] {
-		p.Send(&producer.ProducerRecord{
+		//log.Printf("the producer in produceRoutine: %+v", p)
+		//log.Printf("msg from producer.messageChannels[%v]: %+v (type: %T)", channelIndex, *msg, *msg)
+		pr := &producer.ProducerRecord{
 			Topic:     this.config.TopicPrefix + msg.Topic,
 			Partition: msg.Partition,
 			Key:       msg.Key,
 			Value:     msg.DecodedValue,
-		})
+		}
+		p.Send(pr)
+		//log.Printf("Sent producer record: %+v", *pr)
+		//log.Print("Sent a msg to the producer.")
+		MMessageProducedCount.Add(1)
 	}
 }
 
-func topicPartitionHash(msg *Message) int {
+func TopicPartitionHash(msg *Message) int {
 	h := fnv.New32a()
 	h.Write([]byte(fmt.Sprintf("%s%d", msg.Topic, msg.Partition)))
 	return int(h.Sum32())

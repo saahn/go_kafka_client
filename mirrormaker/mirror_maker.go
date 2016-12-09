@@ -23,6 +23,12 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"syscall"
+	"net/http"
+	_ "expvar"
+	"net"
+	"log"
+	_ "net/http/pprof"
 )
 
 type consumerConfigs []string
@@ -48,6 +54,8 @@ var prefix = flag.String("prefix", "", "Destination topic prefix.")
 var queueSize = flag.Int("queue.size", 10000, "Number of messages that are buffered between the consumer and producer.")
 var maxProcs = flag.Int("max.procs", runtime.NumCPU(), "Maximum number of CPUs that can be executing simultaneously.")
 var schemaRegistryUrl = flag.String("schema.registry.url", "", "Avro schema registry URL for message encoding/decoding")
+var remoteUrl = flag.String("remote.url", "", "host:port of the remote mirrormaker, if mirroring over the network.")
+var listenUrl = flag.String("listen.url", "", "host:port of the listen address of this mirrormaker, if mirroring over the network")
 
 func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 	flag.Var(&consumerConfig, "consumer.config", "Path to consumer configuration file.")
@@ -58,12 +66,16 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 		fmt.Println("Exactly one of whitelist or blacklist is required.")
 		os.Exit(1)
 	}
-	if *producerConfig == "" {
-		fmt.Println("Producer config is required.")
+	if *producerConfig == "" && len(consumerConfig) == 0 {
+		fmt.Println("A producer config or at least one consumer config is required.")
 		os.Exit(1)
 	}
-	if len(consumerConfig) == 0 {
-		fmt.Println("At least one consumer config is required.")
+	if *remoteUrl != "" && len(consumerConfig) == 0 {
+		fmt.Println("A consumer config is required to mirror messages to a remote producer.")
+		os.Exit(1)
+	}
+	if *listenUrl != "" && *producerConfig == "" {
+		fmt.Println("A producer config is required to receive messages from a remote consumer.")
 		os.Exit(1)
 	}
 	if *queueSize < 0 {
@@ -82,6 +94,8 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 	config.PreserveOrder = *preserveOrder
 	config.ProducerConfig = *producerConfig
 	config.TopicPrefix = *prefix
+	config.RemoteUrl = *remoteUrl
+	config.ListenUrl = *listenUrl
 	if *schemaRegistryUrl != "" {
 		config.KeyEncoder = avro.NewKafkaAvroEncoder(*schemaRegistryUrl).Encode
 		config.ValueEncoder = avro.NewKafkaAvroEncoder(*schemaRegistryUrl).Encode
@@ -95,10 +109,33 @@ func parseAndValidateArgs() *kafka.MirrorMakerConfig {
 func main() {
 	config := parseAndValidateArgs()
 	mirrorMaker := kafka.NewMirrorMaker(config)
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	/** Health endpoint setup **/
+
+	// Differentiate ports for Mirrormaker running in different modes since all modes will running on the same host
+	var health_port string
+	if config.RemoteUrl != "" && config.ListenUrl == "" {  // is running as bridge sender
+		health_port = "9191"
+	} else if config.RemoteUrl == "" && config.ListenUrl != "" {  // is running as bridge receiver
+		health_port = "9192"
+	} else if config.RemoteUrl == "" && config.ListenUrl == "" {  // is running as local consumer and producer
+		health_port = "9193"
+	}
+	health_endpoint := net.JoinHostPort("localhost", health_port)
+	go func() {
+		http.ListenAndServe(health_endpoint, nil)
+	}()
+	log.Printf("Health endpoint now available at %v", health_endpoint)
+
+	/** Start mirrormaker **/
+
 	go mirrorMaker.Start()
 
-	ctrlc := make(chan os.Signal, 1)
-	signal.Notify(ctrlc, os.Interrupt)
-	<-ctrlc
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+	<-sigc
 	mirrorMaker.Stop()
 }
