@@ -416,7 +416,6 @@ func (cbs *ChanBridgeSender) Drain() error {
 // 4. The client closes the sender, which closes message channel, after receiving an ack from the remote server.
 func (cbs *ChanBridgeSender) TrySend(m *Message, resend bool) (e error) {
 	defer func() {
-		log.Print("=== [TrySend defer] Entered deferred function")
 		if e != nil {
 			MMessageSendFailureCount.Add(1)
 			log.Printf("!!!!!!!!!!!!!!! [TrySend ERROR] Failed to send message: %+v", m)
